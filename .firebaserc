@@ -1,0 +1,15 @@
+{
+  "projects": {
+    "default": "gecadastro"
+  },
+  "targets": {
+    "gecadastro": {
+      "hosting": {
+        "novo-site": [
+          "vtrsaas"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}

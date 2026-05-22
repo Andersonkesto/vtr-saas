@@ -1,0 +1,20 @@
+{
+  "name": "VTR SaaS",
+  "short_name": "VTR",
+  "start_url": "/vtr",
+  "display": "standalone",
+  "background_color": "#111827",
+  "theme_color": "#2d4a22",
+  "icons": [
+    {
+      "src": "/logo.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/logo.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
