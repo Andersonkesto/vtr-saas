@@ -92,14 +92,19 @@ export default function Admin() {
   const [editCartao, setEditCartao] = useState('');
   const [editKmProximaRevisao, setEditKmProximaRevisao] = useState(0);
   const [salvandoVtr, setSalvandoVtr] = useState(false);
+  const [salvandoMotorista, setSalvandoMotorista] = useState(false);
 
   const [vtrPerfilModal, setVtrPerfilModal] = useState(null);
   const [manutencaoSelecionada, setManutencaoSelecionada] = useState(null);
   const [manutencaoResolucaoModal, setManutencaoResolucaoModal] = useState(null);
+  const [servicoSelecionado, setServicoSelecionado] = useState(null);
   const [detalhesResolucao, setDetalhesResolucao] = useState('');
   const [confirmandoResolucao, setConfirmandoResolucao] = useState(false);
+  const [statusPosResolucao, setStatusPosResolucao] = useState('manter');
   const [filtroVtr, setFiltroVtr] = useState(null);
   const [loadingContent, setLoadingContent] = useState(false);
+  const [manutencoesVtr, setManutencoesVtr] = useState([]);
+  const [expandirTiposManutencao, setExpandirTiposManutencao] = useState(false);
 
   // Nomes para assinaturas editáveis no Relatório Executivo
   const [nomeAuxP4, setNomeAuxP4] = useState('');
@@ -128,6 +133,12 @@ export default function Admin() {
   const [editMotMatricula, setEditMotMatricula] = useState('');
   const [editMotTelefone, setEditMotTelefone] = useState('');
   const [editMotSenha, setEditMotSenha] = useState('');
+
+  // Estados para Encerramento Forçado de Serviço e Recuperação via WhatsApp
+  const [vtrFimForcadoModal, setVtrFimForcadoModal] = useState(null);
+  const [kmFinalForcado, setKmFinalForcado] = useState(0);
+  const [obsFimForcado, setObsFimForcado] = useState('');
+  const [encerrandoForcado, setEncerrandoForcado] = useState(false);
 
   useEffect(() => {
     const qVtr = query(collection(db, 'viaturas'), orderBy('prefixo'));
@@ -293,6 +304,9 @@ export default function Admin() {
       });
 
       // Processar Serviços (KM e Uso)
+      const turnosUnicos = new Set();
+      const turnosUnicosPorVtr = {};
+
       servicos.forEach(s => {
         const p = s.prefixo_vtr;
         if (!p || !biMap[p]) return;
@@ -300,10 +314,69 @@ export default function Admin() {
         const kmRodado = (s.km_final && s.km_inicial) ? (s.km_final - s.km_inicial) : 0;
         if (kmRodado >= 0) {
           biMap[p].kmTotal += kmRodado;
-          biMap[p].turnos += 1;
           gTotalKm += kmRodado;
-          gTotalTurnos += 1;
         }
+
+        // Determinar Turno Operacional Único (Ignorando Deslocamento Administrativo)
+        if (s.finalidade !== 'Deslocamento Administrativo') {
+          const dateObjStart = s.hora_inicial?.toDate ? s.hora_inicial.toDate() : (s.timestamp?.toDate ? s.timestamp.toDate() : (s.timestamp?.seconds ? new Date(s.timestamp.seconds * 1000) : null));
+          const dateObjEnd = s.hora_final?.toDate ? s.hora_final.toDate() : null;
+
+          if (dateObjStart) {
+            const startStr = dateObjStart.toLocaleDateString('pt-BR');
+            const startHour = dateObjStart.getHours();
+            const slotsCovered = [];
+
+            // Determinar se o turno durou mais de 8 horas (indicativo de turno de 12h)
+            let is12h = false;
+            if (dateObjEnd) {
+              const diffHours = (dateObjEnd.getTime() - dateObjStart.getTime()) / (1000 * 60 * 60);
+              if (diffHours > 8) {
+                is12h = true;
+              }
+            }
+
+            if (is12h) {
+              // Cobre dois slots de 6h
+              if (startHour >= 6 && startHour < 12) {
+                slotsCovered.push('manha', 'tarde');
+              } else if (startHour >= 18 && startHour <= 23) {
+                slotsCovered.push('noite', 'madrugada');
+              } else {
+                slotsCovered.push('especial_1', 'especial_2');
+              }
+            } else {
+              // Turno normal de 6h ou alternativo (como 22:00 às 04:00, 19:00 às 01:00, etc.)
+              let slotId = 'madrugada';
+              if (startHour >= 6 && startHour < 12) slotId = 'manha';
+              else if (startHour >= 12 && startHour < 18) slotId = 'tarde';
+              else if (startHour >= 18 && startHour <= 23) slotId = 'noite';
+              slotsCovered.push(slotId);
+            }
+
+            slotsCovered.forEach(slotId => {
+              const shiftKey = `${p}_${startStr}_${slotId}`;
+
+              if (!turnosUnicos.has(shiftKey)) {
+                turnosUnicos.add(shiftKey);
+                gTotalTurnos += 1;
+              }
+
+              if (!turnosUnicosPorVtr[p]) {
+                turnosUnicosPorVtr[p] = new Set();
+              }
+              if (!turnosUnicosPorVtr[p].has(shiftKey)) {
+                turnosUnicosPorVtr[p].add(shiftKey);
+                biMap[p].turnos += 1;
+              }
+            });
+          } else {
+            // Fallback se não houver data de início válida
+            gTotalTurnos += 1;
+            biMap[p].turnos += 1;
+          }
+        }
+
         if (!biMap[p].ultimaAtividade || (s.timestamp?.seconds > biMap[p].ultimaAtividade?.seconds)) {
           biMap[p].ultimaAtividade = s.timestamp;
         }
@@ -396,10 +469,26 @@ export default function Admin() {
     link.click();
   };
 
+  const abrirPerfilViatura = async (vtr) => {
+    let dadosExtras = { ...vtr };
+    if (vtr.status === 'em_servico' && vtr.servico_atual_id) {
+       try {
+         const servSnap = await getDoc(doc(db, 'servicos', vtr.servico_atual_id));
+         if (servSnap.exists()) {
+           const servData = servSnap.data();
+           dadosExtras.motorista_atual = servData.motorista;
+           dadosExtras.patrulheiro_atual = servData.patrulheiro;
+         }
+       } catch (e) { console.error(e); }
+    }
+    setVtrPerfilModal(dadosExtras);
+  };
+
   const carregarHistorico = async (prefixo = null) => {
     setViewMode('historico');
     setFiltroVtr(prefixo);
     setLoadingContent(true);
+    setExpandirTiposManutencao(false);
     try {
       let qHist;
       if (prefixo) qHist = query(collection(db, 'servicos'), where('prefixo_vtr', '==', prefixo), limit(100));
@@ -409,6 +498,16 @@ export default function Admin() {
       snapshot.forEach((doc) => hist.push({ id: doc.id, ...doc.data() }));
       if (prefixo) hist.sort((a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0));
       setHistorico(hist);
+
+      if (prefixo) {
+        const qMan = query(collection(db, 'manutencoes'), where('prefixo_vtr', '==', prefixo));
+        const manSnap = await getDocs(qMan);
+        let mans = [];
+        manSnap.forEach(doc => mans.push({ id: doc.id, ...doc.data() }));
+        setManutencoesVtr(mans);
+      } else {
+        setManutencoesVtr([]);
+      }
     } catch (e) { console.error(e); } finally { setLoadingContent(false); }
   };
 
@@ -465,11 +564,13 @@ export default function Admin() {
 
   const salvarMotorista = async (e) => {
     e.preventDefault();
-    if (!motoristaParaEditar) return;
+    if (!motoristaParaEditar || salvandoMotorista) return;
+    setSalvandoMotorista(true);
     try {
       const matriculaId = editMotMatricula.trim();
       if (matriculaId.length !== 7) {
         alert("A matrícula deve conter 7 números.");
+        setSalvandoMotorista(false);
         return;
       }
 
@@ -500,6 +601,8 @@ export default function Admin() {
     } catch (err) {
       console.error(err);
       alert("Erro ao salvar usuário.");
+    } finally {
+      setSalvandoMotorista(false);
     }
   };
 
@@ -519,6 +622,7 @@ export default function Admin() {
     setSistemaAfetado(manutencao.sistema_afetado || 'Outros');
     setGravidade(manutencao.gravidade || 'Média');
     setLocalReparo(manutencao.local_manutencao || '');
+    setStatusPosResolucao('manter');
   };
 
   const confirmarResolucaoFinal = async () => {
@@ -536,10 +640,15 @@ export default function Admin() {
         email_resolucao: emailResponsavel
       });
 
-      // Liberar viatura vinculada
+      // Atualizar o status da viatura vinculada conforme a escolha do admin
       const vtrRelacionada = viaturas.find(v => v.prefixo === manutencaoResolucaoModal.prefixo_vtr);
       if (vtrRelacionada) {
-        await updateDoc(doc(db, 'viaturas', vtrRelacionada.id), { status: 'disponivel' });
+        if (statusPosResolucao === 'disponivel') {
+          await updateDoc(doc(db, 'viaturas', vtrRelacionada.id), { status: 'disponivel' });
+        } else if (statusPosResolucao === 'baixada') {
+          await updateDoc(doc(db, 'viaturas', vtrRelacionada.id), { status: 'baixada' });
+        }
+        // Se for 'manter', não altera o status atual (continua cautelada/em serviço, etc)
       }
 
       await registrarAuditoria('RESOLVER_MANUTENCAO', {
@@ -628,7 +737,7 @@ export default function Admin() {
         body: JSON.stringify({
           number: foneFormatado,
           textMessage: {
-            text: "🔔 *VTR CONTROL SaaS* - Teste de Conectividade WhatsApp ativo e operando com sucesso! 🚀"
+            text: "🔔 *VTR SaaS*\n\n> Teste de Conectividade WhatsApp ativo e operando com sucesso! 🚀"
           }
         })
       });
@@ -677,6 +786,136 @@ export default function Admin() {
       setVtrBaixaModal(null);
       setMotivoBaixa('');
     } catch (e) { console.error(e); } finally { setBaixando(false); }
+  };
+
+  const abrirFimForcado = (vtr) => {
+    setVtrFimForcadoModal(vtr);
+    setKmFinalForcado(vtr.km_atual || 0);
+    setObsFimForcado('');
+    setEncerrandoForcado(false);
+  };
+
+  const confirmarFimForcado = async () => {
+    if (!vtrFimForcadoModal || encerrandoForcado) return;
+
+    if (Number(kmFinalForcado) < (vtrFimForcadoModal.km_atual || 0)) {
+      showConfirm("Erro de KM", "O KM final não pode ser menor que o KM atual.", "warning", () => { }, () => { });
+      return;
+    }
+
+    setEncerrandoForcado(true);
+    try {
+      const servicoId = vtrFimForcadoModal.servico_atual_id;
+      if (servicoId) {
+        const servicoRef = doc(db, 'servicos', servicoId);
+        await updateDoc(servicoRef, {
+          km_final: Number(kmFinalForcado),
+          hora_final: serverTimestamp(),
+          com_alteracao: true,
+          descricao_alteracao: `[ENCERRAMENTO ADMIN] ${obsFimForcado || 'Sem observações'}`
+        });
+      }
+
+      await updateDoc(doc(db, 'viaturas', vtrFimForcadoModal.id), {
+        status: 'disponivel',
+        km_atual: Number(kmFinalForcado),
+        servico_atual_id: null,
+        matricula_ativa: null
+      });
+
+      await registrarAuditoria('ENCERRAMENTO_FORCADO_VIATURA', {
+        prefixo: vtrFimForcadoModal.prefixo,
+        km_final: kmFinalForcado,
+        observacao: obsFimForcado,
+        matricula_anterior: vtrFimForcadoModal.matricula_ativa
+      });
+
+      setVtrFimForcadoModal(null);
+      showConfirm("Sucesso", `O turno da VTR ${vtrFimForcadoModal.prefixo} foi encerrado e a viatura está disponível.`, "success", () => { }, () => { });
+    } catch (e) {
+      console.error("Erro ao forçar encerramento:", e);
+      showConfirm("Erro", "Não foi possível forçar o encerramento do turno.", "danger", () => { }, () => { });
+    } finally {
+      setEncerrandoForcado(false);
+    }
+  };
+
+  const enviarLinkResetWhatsapp = async (mot) => {
+    if (!mot.telefone) {
+      showConfirm("Aviso", `O motorista ${mot.graduacao} ${mot.nome} não possui telefone cadastrado.`, "warning", () => { }, () => { });
+      return;
+    }
+
+    showConfirm(
+      "Enviar Recuperação",
+      `Deseja enviar um link de recuperação de senha para ${mot.graduacao} ${mot.nome} via WhatsApp (${mot.telefone})?`,
+      "info",
+      async () => {
+        try {
+          const token = Math.random().toString(36).substring(2, 8).toUpperCase();
+          const expiresAt = Date.now() + 15 * 60 * 1000;
+
+          const motDocRef = doc(db, 'motoristas', mot.matricula);
+          await updateDoc(motDocRef, {
+            reset_token: token,
+            reset_token_expires: expiresAt
+          });
+
+          const waSnap = await getDoc(doc(db, 'settings', 'whatsapp'));
+          if (waSnap.exists()) {
+            const waConfig = waSnap.data();
+            if (waConfig.enabled && waConfig.url && waConfig.instance && waConfig.apikey) {
+              let baseUrl = waConfig.url.trim();
+              if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
+
+              const resetLink = `${window.location.origin}/vtr?reset_matricula=${mot.matricula}&reset_token=${token}`;
+              const msg = `🔔 *VTR SaaS - Recuperação de Senha* 🔔\n\n` +
+                `Olá, *${mot.graduacao} ${mot.nome}*!\n\n` +
+                `A administração gerou um link de recuperação de senha seguro para o seu acesso.\n\n` +
+                `Para definir uma nova senha, clique no link abaixo (válido por 15 minutos):\n` +
+                `👉 ${resetLink}\n\n` +
+                `Caso você não precise dessa alteração, ignore esta mensagem.\n\n` +
+                `*Desenvolvido por:*\n> Sd Anderson`;
+
+              const headers = { 'Content-Type': 'application/json', 'apikey': waConfig.apikey.trim() };
+              const endpoint = `${baseUrl}/message/sendText/${waConfig.instance.trim()}`;
+
+              const foneLimpo = mot.telefone.replace(/\D/g, '');
+              const foneFormatado = foneLimpo && !foneLimpo.startsWith('55') && (foneLimpo.length === 10 || foneLimpo.length === 11) ? '55' + foneLimpo : foneLimpo;
+
+              if (foneFormatado) {
+                const response = await fetch(endpoint, {
+                  method: 'POST',
+                  headers,
+                  body: JSON.stringify({
+                    number: foneFormatado,
+                    textMessage: { text: msg }
+                  })
+                });
+
+                if (response.ok) {
+                  showConfirm("Sucesso", "Link de recuperação enviado com sucesso via WhatsApp!", "success", () => { }, () => { });
+                  await registrarAuditoria('ENVIAR_RECUPERACAO_SENHA_WA', { matricula: mot.matricula, nome: mot.nome });
+                } else {
+                  const errorMsg = await response.text();
+                  console.error("Erro Evolution API:", errorMsg);
+                  showConfirm("Erro de Disparo", `Não foi possível enviar a mensagem. Evolution API retornou: ${response.status}`, "danger", () => { }, () => { });
+                }
+              } else {
+                showConfirm("Erro no Telefone", "O telefone deste usuário possui formato inválido.", "danger", () => { }, () => { });
+              }
+            } else {
+              showConfirm("WhatsApp Inativo", "A integração com o WhatsApp não está configurada ou habilitada em Painel > WhatsApp.", "warning", () => { }, () => { });
+            }
+          } else {
+            showConfirm("WhatsApp Não Configurado", "As configurações de WhatsApp não existem no banco de dados.", "warning", () => { }, () => { });
+          }
+        } catch (e) {
+          console.error(e);
+          showConfirm("Erro Inesperado", "Ocorreu um erro ao gerar a recuperação de senha.", "danger", () => { }, () => { });
+        }
+      }
+    );
   };
 
   const adicionarViatura = (e) => {
@@ -784,7 +1023,7 @@ export default function Admin() {
 
   const getStatusOleo = (vtr) => {
     const kmAtual = vtr.km_atual || 0;
-    const proxima = (vtr.km_ultima_troca || 0) + (vtr.intervalo_troca || 5000);
+    const proxima = vtr.km_ultima_troca || 0;
     const faltam = proxima - kmAtual;
     if (faltam <= 0) return { label: 'TROCAR AGORA', class: 'alert-red' };
     if (faltam <= 500) return { label: `Faltam ${faltam}km`, class: 'alert-orange' };
@@ -1131,6 +1370,49 @@ export default function Admin() {
         </div>
       )}
 
+      {vtrFimForcadoModal && (
+        <div className="modal-overlay" onClick={() => !encerrandoForcado && setVtrFimForcadoModal(null)} style={{ zIndex: 1500 }}>
+          <div className="modal-content" onClick={e => e.stopPropagation()} style={{ borderTopColor: '#eab308' }}>
+            <div className="modal-confirm-icon"><AlertCircle size={48} color="#eab308" /></div>
+            <h3>Forçar Fim de Turno - VTR {vtrFimForcadoModal.prefixo}</h3>
+            <p className="text-muted" style={{ fontSize: '0.85rem', marginTop: '0.5rem' }}>
+              Esta ação encerrará administrativamente o serviço ativo assumido pelo motorista de matrícula <strong>{vtrFimForcadoModal.matricula_ativa}</strong>.
+            </p>
+            <div className="form-group" style={{ marginTop: '1.5rem', textAlign: 'left' }}>
+              <label className="form-label">Quilometragem Final <span style={{ color: 'red' }}>*</span></label>
+              <input
+                type="number"
+                className="form-input"
+                value={kmFinalForcado}
+                onChange={e => setKmFinalForcado(Number(e.target.value))}
+                disabled={encerrandoForcado}
+                required
+              />
+              <span className="text-muted" style={{ fontSize: '0.75rem', marginTop: '0.25rem', display: 'block' }}>
+                KM Inicial/Atual: {vtrFimForcadoModal.km_atual} km
+              </span>
+            </div>
+            <div className="form-group" style={{ marginTop: '1rem', textAlign: 'left' }}>
+              <label className="form-label">Observação do P4</label>
+              <textarea
+                className="form-input"
+                rows="3"
+                placeholder="Ex: Motorista precisou ser baixado de emergência..."
+                value={obsFimForcado}
+                onChange={e => setObsFimForcado(e.target.value)}
+                disabled={encerrandoForcado}
+              />
+            </div>
+            <div className="modal-confirm-buttons" style={{ marginTop: '1.5rem' }}>
+              <button className="btn btn-secondary" onClick={() => setVtrFimForcadoModal(null)} disabled={encerrandoForcado}>Cancelar</button>
+              <button className="btn" onClick={confirmarFimForcado} disabled={encerrandoForcado || !kmFinalForcado} style={{ backgroundColor: '#eab308', color: 'white' }}>
+                {encerrandoForcado ? 'Processando...' : 'Forçar Encerramento'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {vtrSelecionadaQR && (
         <div className="modal-overlay" onClick={() => setVtrSelecionadaQR(null)}>
           <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: '450px' }}>
@@ -1254,7 +1536,7 @@ export default function Admin() {
                 <div className="form-group"><label className="form-label">Ano</label><input type="text" className="form-input" value={editAno} onChange={e => setEditAno(e.target.value)} placeholder="2023/2024" disabled={salvandoVtr} /></div>
                 <div className="form-group"><label className="form-label">Cartão Abast.</label><input type="text" className="form-input" value={editCartao} onChange={e => setEditCartao(e.target.value)} disabled={salvandoVtr} /></div>
                 <div className="form-group"><label className="form-label">KM Atual</label><input type="number" className="form-input" value={editKmAtual} onChange={e => setEditKmAtual(e.target.value)} disabled={salvandoVtr} /></div>
-                <div className="form-group"><label className="form-label">KM Última Troca</label><input type="number" className="form-input" value={editKmUltimaTroca} onChange={e => setEditKmUltimaTroca(e.target.value)} disabled={salvandoVtr} /></div>
+                <div className="form-group"><label className="form-label">Próxima Troca</label><input type="number" className="form-input" value={editKmUltimaTroca} onChange={e => setEditKmUltimaTroca(e.target.value)} disabled={salvandoVtr} /></div>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', marginTop: '0.5rem' }}>
                 <div className="form-group"><label className="form-label">Intervalo Troca Óleo (km)</label><input type="number" className="form-input" value={editIntervaloTroca} onChange={e => setEditIntervaloTroca(e.target.value)} disabled={salvandoVtr} /></div>
@@ -1272,17 +1554,17 @@ export default function Admin() {
       )}
 
       {motoristaParaEditar && (
-        <div className="modal-overlay" onClick={() => setMotoristaParaEditar(null)} style={{ zIndex: 1600 }}>
+        <div className="modal-overlay" onClick={() => !salvandoMotorista && setMotoristaParaEditar(null)} style={{ zIndex: 1600 }}>
           <div className="modal-content fade-in" onClick={e => e.stopPropagation()} style={{ maxWidth: '500px' }}>
             <div className="flex-between">
               <h3>{motoristaParaEditar.id === 'NEW' ? 'Cadastrar Novo ME' : `Editar ME ${motoristaParaEditar.nome}`}</h3>
-              <button onClick={() => setMotoristaParaEditar(null)} className="btn-icon"><X /></button>
+              <button type="button" onClick={() => !salvandoMotorista && setMotoristaParaEditar(null)} className="btn-icon" disabled={salvandoMotorista}><X /></button>
             </div>
             <form onSubmit={salvarMotorista} style={{ textAlign: 'left', marginTop: '1rem' }}>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem' }}>
                 <div className="form-group">
                   <label className="form-label">Graduação</label>
-                  <select className="form-input" value={editMotGraduacao} onChange={e => setEditMotGraduacao(e.target.value)} required>
+                  <select className="form-input" value={editMotGraduacao} onChange={e => setEditMotGraduacao(e.target.value)} required disabled={salvandoMotorista}>
                     <option value="Sd">Sd</option>
                     <option value="2º Sgt">2º Sgt</option>
                     <option value="1º Sgt">1º Sgt</option>
@@ -1291,25 +1573,25 @@ export default function Admin() {
                 </div>
                 <div className="form-group">
                   <label className="form-label">Nome de Guerra</label>
-                  <input type="text" className="form-input" value={editMotNome} onChange={e => setEditMotNome(e.target.value)} required placeholder="Ex: Silva" />
+                  <input type="text" className="form-input" value={editMotNome} onChange={e => setEditMotNome(e.target.value)} required placeholder="Ex: Silva" disabled={salvandoMotorista} />
                 </div>
                 <div className="form-group">
                   <label className="form-label">Matrícula (7 dígitos)</label>
-                  <input type="text" className="form-input" value={editMotMatricula} onChange={e => setEditMotMatricula(e.target.value.replace(/\D/g, ''))} maxLength={7} required placeholder="0000000" />
+                  <input type="text" className="form-input" value={editMotMatricula} onChange={e => setEditMotMatricula(e.target.value.replace(/\D/g, ''))} maxLength={7} required placeholder="0000000" disabled={salvandoMotorista} />
                 </div>
                 <div className="form-group">
                   <label className="form-label">Telefone (WhatsApp)</label>
-                  <input type="text" className="form-input" value={editMotTelefone} onChange={e => setEditMotTelefone(e.target.value)} required placeholder="(53) 99999-9999" />
+                  <input type="text" className="form-input" value={editMotTelefone} onChange={e => setEditMotTelefone(e.target.value)} required placeholder="(53) 99999-9999" disabled={salvandoMotorista} />
                 </div>
                 <div className="form-group" style={{ gridColumn: '1 / -1' }}>
                   <label className="form-label">Senha</label>
-                  <input type="text" className="form-input" value={editMotSenha} onChange={e => setEditMotSenha(e.target.value)} required placeholder="Defina uma senha" />
+                  <input type="text" className="form-input" value={editMotSenha} onChange={e => setEditMotSenha(e.target.value)} required placeholder="Defina uma senha" disabled={salvandoMotorista} />
                 </div>
               </div>
               <div style={{ marginTop: '1.5rem', display: 'flex', gap: '1rem' }}>
-                <button type="button" className="btn btn-secondary" onClick={() => setMotoristaParaEditar(null)} style={{ backgroundColor: 'var(--hover-bg)', color: 'var(--text-main)', border: '1px solid var(--border-color)' }}>Cancelar</button>
-                <button type="submit" className="btn btn-primary" style={{ flex: 2 }}>
-                  {motoristaParaEditar.id === 'NEW' ? 'Confirmar Cadastro' : 'Salvar Alterações'}
+                <button type="button" className="btn btn-secondary" onClick={() => setMotoristaParaEditar(null)} style={{ backgroundColor: 'var(--hover-bg)', color: 'var(--text-main)', border: '1px solid var(--border-color)' }} disabled={salvandoMotorista}>Cancelar</button>
+                <button type="submit" className="btn btn-primary" style={{ flex: 2 }} disabled={salvandoMotorista}>
+                  {salvandoMotorista ? 'Processando...' : 'Salvar dados'}
                 </button>
               </div>
             </form>
@@ -1369,7 +1651,7 @@ export default function Admin() {
               </div>
             </div>
 
-            <div className="form-group" style={{ textAlign: 'left', marginBottom: '1.5rem' }}>
+            <div className="form-group" style={{ textAlign: 'left', marginBottom: '1rem' }}>
               <label className="form-label">Local / Oficina <span style={{ color: 'red' }}>*</span></label>
               <input
                 type="text"
@@ -1380,6 +1662,20 @@ export default function Admin() {
                 disabled={confirmandoResolucao}
                 required
               />
+            </div>
+
+            <div className="form-group" style={{ textAlign: 'left', marginBottom: '1.5rem' }}>
+              <label className="form-label">Status da VTR após resolução <span style={{ color: 'red' }}>*</span></label>
+              <select
+                className="form-input"
+                value={statusPosResolucao}
+                onChange={e => setStatusPosResolucao(e.target.value)}
+                disabled={confirmandoResolucao}
+              >
+                <option value="manter">Manter status atual (Ex: Continua Cautelada)</option>
+                <option value="disponivel">Liberar (Disponível)</option>
+                <option value="baixada">Ficar Baixada</option>
+              </select>
             </div>
 
             <div className="modal-confirm-buttons">
@@ -1419,7 +1715,7 @@ export default function Admin() {
                 <div><label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, display: 'block', textTransform: 'uppercase', marginBottom: '4px' }}>KM Atual</label><strong style={{ fontSize: '1rem' }}>{vtrPerfilModal.km_atual || 0} km</strong></div>
                 <div>
                   <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, display: 'block', textTransform: 'uppercase', marginBottom: '4px' }}>Próxima Troca Óleo</label>
-                  <strong style={{ fontSize: '1rem', color: getStatusOleo(vtrPerfilModal).class === 'alert-red' ? 'red' : 'inherit' }}>{(vtrPerfilModal.km_ultima_troca || 0) + (vtrPerfilModal.intervalo_troca || 5000)} km</strong>
+                  <strong style={{ fontSize: '1rem', color: getStatusOleo(vtrPerfilModal).class === 'alert-red' ? 'red' : 'inherit' }}>{vtrPerfilModal.km_ultima_troca || 0} km</strong>
                   <span className={getStatusOleo(vtrPerfilModal).class} style={{ fontSize: '0.8rem', display: 'block', marginTop: '2px' }}>{getStatusOleo(vtrPerfilModal).label}</span>
                 </div>
                 <div>
@@ -1435,8 +1731,15 @@ export default function Admin() {
                 </div>
                 {vtrPerfilModal.status === 'em_servico' && vtrPerfilModal.matricula_ativa && (
                   <div style={{ gridColumn: '1 / -1', backgroundColor: 'var(--badge-inservice-bg)', padding: '10px', borderRadius: '8px', border: '1px solid var(--badge-inservice-text)' }}>
-                    <label style={{ fontSize: '0.7rem', color: 'var(--badge-inservice-text)', fontWeight: 700, display: 'block', textTransform: 'uppercase', marginBottom: '4px' }}>Matrícula em Serviço</label>
-                    <strong style={{ fontSize: '1.1rem', color: 'var(--badge-inservice-text)' }}>{vtrPerfilModal.matricula_ativa}</strong>
+                    <label style={{ fontSize: '0.7rem', color: 'var(--badge-inservice-text)', fontWeight: 700, display: 'block', textTransform: 'uppercase', marginBottom: '4px' }}>Guarnição Atual (Em Serviço)</label>
+                    <strong style={{ fontSize: '1.1rem', color: 'var(--badge-inservice-text)', display: 'block' }}>
+                       Motorista: {vtrPerfilModal.motorista_atual || vtrPerfilModal.matricula_ativa}
+                    </strong>
+                    {vtrPerfilModal.patrulheiro_atual && (
+                       <strong style={{ fontSize: '0.9rem', color: 'var(--badge-inservice-text)', display: 'block', marginTop: '4px' }}>
+                          Patrulheiro(s): {vtrPerfilModal.patrulheiro_atual}
+                       </strong>
+                    )}
                   </div>
                 )}
               </div>
@@ -1444,6 +1747,75 @@ export default function Admin() {
               <div style={{ marginTop: '2rem', display: 'flex', flexWrap: 'wrap', gap: '0.75rem' }}>
                 <button className="btn btn-secondary" onClick={() => { setVtrPerfilModal(null); abrirEdicao(vtrPerfilModal); }} style={{ flex: '1 1 140px' }}><Edit size={18} /> Editar</button>
                 <button className="btn btn-primary" onClick={() => { setVtrPerfilModal(null); carregarHistorico(vtrPerfilModal.prefixo); }} style={{ flex: '1 1 140px' }}><History size={18} /> Histórico</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {servicoSelecionado && (
+        <div className="modal-overlay" onClick={() => setServicoSelecionado(null)} style={{ zIndex: 1200 }}>
+          <div className="modal-content fade-in" onClick={e => e.stopPropagation()} style={{ maxWidth: '500px', borderTop: '5px solid var(--bm-green)' }}>
+            <div className="flex-between" style={{ marginBottom: '1.5rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{ backgroundColor: 'var(--bm-green)', color: 'white', padding: '10px', borderRadius: '12px' }}><History size={24} /></div>
+                <div style={{ textAlign: 'left' }}>
+                  <h3 style={{ margin: 0, color: 'var(--text-main)', fontSize: '1.25rem' }}>Detalhes do Serviço</h3>
+                  <span className="text-muted" style={{ fontSize: '0.85rem' }}>VTR {servicoSelecionado.prefixo_vtr}</span>
+                </div>
+              </div>
+              <button onClick={() => setServicoSelecionado(null)} className="btn-icon"><X /></button>
+            </div>
+
+            <div className="profile-details" style={{ textAlign: 'left' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.25rem' }}>
+                <div>
+                  <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, display: 'block', textTransform: 'uppercase', marginBottom: '4px' }}>Motorista (Assunção)</label>
+                  <strong style={{ fontSize: '0.95rem' }}>{servicoSelecionado.motorista || servicoSelecionado.matricula_assuncao || 'N/A'}</strong>
+                </div>
+                <div>
+                  <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, display: 'block', textTransform: 'uppercase', marginBottom: '4px' }}>Patrulheiro(s)</label>
+                  <strong style={{ fontSize: '0.95rem' }}>{servicoSelecionado.patrulheiro || '---'}</strong>
+                </div>
+                <div>
+                  <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, display: 'block', textTransform: 'uppercase', marginBottom: '4px' }}>Início do Serviço</label>
+                  <strong style={{ fontSize: '0.95rem' }}>{formatarData(servicoSelecionado.hora_inicial)}</strong>
+                </div>
+                <div>
+                  <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, display: 'block', textTransform: 'uppercase', marginBottom: '4px' }}>Fim do Serviço</label>
+                  <strong style={{ fontSize: '0.95rem', color: servicoSelecionado.hora_final ? 'inherit' : 'var(--bm-green)' }}>{servicoSelecionado.hora_final ? formatarData(servicoSelecionado.hora_final) : 'Em curso'}</strong>
+                </div>
+                <div>
+                  <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, display: 'block', textTransform: 'uppercase', marginBottom: '4px' }}>KM Inicial</label>
+                  <strong style={{ fontSize: '0.95rem' }}>{servicoSelecionado.km_inicial} km</strong>
+                </div>
+                <div>
+                  <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, display: 'block', textTransform: 'uppercase', marginBottom: '4px' }}>KM Final</label>
+                  <strong style={{ fontSize: '0.95rem' }}>{servicoSelecionado.km_final ? `${servicoSelecionado.km_final} km` : '---'}</strong>
+                </div>
+                {servicoSelecionado.finalidade && (
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, display: 'block', textTransform: 'uppercase', marginBottom: '4px' }}>Finalidade</label>
+                    <strong style={{ fontSize: '0.95rem' }}>{servicoSelecionado.finalidade}</strong>
+                  </div>
+                )}
+                {servicoSelecionado.galope_realizado && (
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <span className="badge badge-available" style={{ fontSize: '0.75rem', padding: '4px 8px' }}>✓ G.A.L.O.P.E Realizado na Assunção</span>
+                  </div>
+                )}
+                {servicoSelecionado.alteracao_inicial && (
+                  <div style={{ gridColumn: '1 / -1', backgroundColor: 'var(--input-bg)', padding: '10px', borderRadius: '8px', borderLeft: '3px solid var(--status-warning)' }}>
+                    <label style={{ fontSize: '0.7rem', color: 'var(--status-warning)', fontWeight: 700, display: 'block', textTransform: 'uppercase', marginBottom: '4px' }}>Alteração Informada na Assunção</label>
+                    <div style={{ fontSize: '0.9rem', lineHeight: '1.4' }}>{servicoSelecionado.alteracao_inicial}</div>
+                  </div>
+                )}
+                {servicoSelecionado.alteracao_final && (
+                  <div style={{ gridColumn: '1 / -1', backgroundColor: 'var(--input-bg)', padding: '10px', borderRadius: '8px', borderLeft: '3px solid var(--status-warning)' }}>
+                    <label style={{ fontSize: '0.7rem', color: 'var(--status-warning)', fontWeight: 700, display: 'block', textTransform: 'uppercase', marginBottom: '4px' }}>Alteração Informada na Entrega</label>
+                    <div style={{ fontSize: '0.9rem', lineHeight: '1.4' }}>{servicoSelecionado.alteracao_final}</div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -1503,7 +1875,7 @@ export default function Admin() {
                   let rowClass = vtr.status === 'baixada' ? 'row-status-alert' : vtr.status === 'em_servico' ? 'row-status-inservice' : 'row-status-available';
                   return (
                     <tr key={vtr.id} className={rowClass}>
-                      <td><strong className="link-prefix" onClick={() => setVtrPerfilModal(vtr)} style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', whiteSpace: 'nowrap' }}><Car size={18} style={{ flexShrink: 0 }} /> {vtr.prefixo}</strong></td>
+                      <td><strong className="link-prefix" onClick={() => abrirPerfilViatura(vtr)} style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', whiteSpace: 'nowrap' }}><Car size={18} style={{ flexShrink: 0 }} /> {vtr.prefixo}</strong></td>
                       <td><span className={`badge ${vtr.status === 'disponivel' ? 'badge-available' : vtr.status === 'em_servico' ? 'badge-inservice' : 'badge-alert'}`}>{vtr.status}</span></td>
                       <td className="hide-mobile">{vtr.km_atual}</td>
                       <td className="hide-mobile"><span className={statusOleo.class}>{statusOleo.label}</span></td>
@@ -1520,6 +1892,9 @@ export default function Admin() {
                           <button className="btn-icon" onClick={() => abrirEdicao(vtr)} title="Editar"><Edit size={16} /></button>
                           <button className="btn-icon" onClick={() => abrirQR(vtr)} title="QR Code"><QrCode size={16} /></button>
                           <button className="btn-icon" onClick={() => alternarStatusBaixada(vtr)} title={vtr.status === 'baixada' ? "Liberar" : "Baixar"}>{vtr.status === 'baixada' ? <CheckCircle2 size={16} color="#10b981" /> : <ShieldAlert size={16} color="#ef4444" />}</button>
+                          {vtr.status === 'em_servico' && (
+                            <button className="btn-icon" onClick={() => abrirFimForcado(vtr)} title="Forçar Encerramento de Turno" style={{ color: '#eab308' }}><X size={16} /></button>
+                          )}
                           <button className="btn-icon" onClick={() => excluirViatura(vtr.id)} title="Excluir"><Trash2 size={16} /></button>
                         </div>
                       </td>
@@ -2008,22 +2383,228 @@ export default function Admin() {
         );
       })()}
 
-      {viewMode === 'historico' && (
-        <div className="card table-wrapper fade-in">
-          <div className="flex-between"><h3>Histórico {filtroVtr ? `VTR ${filtroVtr}` : 'Recente'}</h3>{filtroVtr && <button onClick={() => carregarHistorico()}><Filter /></button>}</div>
-          <table className="table">
-            <thead><tr>{!filtroVtr && <th>VTR</th>}<th>Motorista</th><th>Início / Fim</th><th>KM</th></tr></thead>
-            <tbody>{historico.map(log => (
-              <tr key={log.id}>
-                {!filtroVtr && <td><strong>{log.prefixo_vtr}</strong></td>}
-                <td>{log.motorista}</td>
-                <td><div style={{ fontSize: '0.8rem' }}>{formatarData(log.hora_inicial)}</div><div style={{ fontSize: '0.8rem' }}>{log.hora_final ? formatarData(log.hora_final) : 'Em curso'}</div></td>
-                <td>{log.km_final && log.km_inicial ? log.km_final - log.km_inicial : '-'}</td>
-              </tr>
-            ))}</tbody>
-          </table>
-        </div>
-      )}
+      {viewMode === 'historico' && (() => {
+        const totalKm = historico.reduce((acc, log) => {
+          const km = (log.km_final && log.km_inicial) ? (log.km_final - log.km_inicial) : 0;
+          return acc + (km >= 0 ? km : 0);
+        }, 0);
+
+        const diasAtivos = new Set(
+          historico
+            .map(log => {
+              const dateObj = log.hora_inicial?.toDate ? log.hora_inicial.toDate() : (log.hora_inicial ? new Date(log.hora_inicial) : null);
+              return dateObj ? dateObj.toLocaleDateString('pt-BR') : null;
+            })
+            .filter(Boolean)
+        ).size;
+
+        const mediaKmPorDia = diasAtivos > 0 ? (totalKm / diasAtivos).toFixed(1) : 0;
+
+        const categorizarManutencao = (m) => {
+          const desc = (m.descricao || '').toLowerCase();
+          const sys = (m.sistema_afetado || '').toLowerCase();
+
+          if (sys === 'elétrica' || sys === 'eletrica' || desc.includes('bateria') || desc.includes('farol') || desc.includes('lampada') || desc.includes('lâmpada') || desc.includes('sirene') || desc.includes('giroflex') || desc.includes('pisca') || desc.includes('elétrica') || desc.includes('eletrica') || desc.includes('fusível') || desc.includes('fusivel') || desc.includes('buzina')) {
+            return 'Elétrica';
+          }
+          if (sys === 'motor' || desc.includes('óleo') || desc.includes('oleo') || desc.includes('lubrificante') || desc.includes('filtro') || desc.includes('radiador') || desc.includes('água') || desc.includes('agua') || desc.includes('aquecimento') || desc.includes('correia') || desc.includes('fumaça') || desc.includes('fumaca') || desc.includes('vazamento') || desc.includes('motor')) {
+            return 'Motor / Óleo';
+          }
+          if (sys === 'freios' || sys === 'freio' || desc.includes('freio') || desc.includes('pastilha') || desc.includes('disco') || desc.includes('abs') || desc.includes('fluido')) {
+            return 'Freios';
+          }
+          if (sys === 'suspensão' || sys === 'suspensao' || desc.includes('suspensao') || desc.includes('suspensão') || desc.includes('amortecedor') || desc.includes('mola') || desc.includes('pneu') || desc.includes('roda') || desc.includes('alinhamento') || desc.includes('balanceamento')) {
+            return 'Suspensão / Pneus';
+          }
+          return 'Outros';
+        };
+
+        const contagemTipos = {
+          'Motor / Óleo': 0,
+          'Elétrica': 0,
+          'Freios': 0,
+          'Suspensão / Pneus': 0,
+          'Outros': 0
+        };
+
+        manutencoesVtr.forEach(m => {
+          const cat = categorizarManutencao(m);
+          contagemTipos[cat] = (contagemTipos[cat] || 0) + 1;
+        });
+
+        const totalDefeitos = manutencoesVtr.length;
+
+        return (
+          <div className="fade-in">
+            <div className="flex-between" style={{ marginBottom: '1.5rem', alignItems: 'center' }}>
+              <div>
+                <h3 style={{ fontSize: '1.5rem', margin: 0 }}>
+                  {filtroVtr ? `Histórico Detalhado: VTR ${filtroVtr}` : 'Histórico Recente da Frota'}
+                </h3>
+                <p className="text-muted">Lista de turnos, quilometragem e registros operacionais</p>
+              </div>
+              {filtroVtr && (
+                <button 
+                  className="btn btn-secondary" 
+                  onClick={() => carregarHistorico()}
+                  style={{ width: 'auto', display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 16px', fontSize: '0.9rem' }}
+                >
+                  <Filter size={16} /> Ver Toda Frota
+                </button>
+              )}
+            </div>
+
+            {filtroVtr && (
+              <div style={{ marginBottom: '2rem' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.25rem', marginBottom: '1.25rem' }}>
+                  
+                  {/* KPI Média de KM */}
+                  <div className="stat-card" style={{ borderTop: '4px solid var(--bm-green)', padding: '1.25rem', height: '100%' }}>
+                    <div className="stat-icon" style={{ backgroundColor: 'rgba(16, 185, 129, 0.1)', color: 'var(--status-available)' }}>
+                      <TrendingUp size={24} />
+                    </div>
+                    <div className="stat-info" style={{ textAlign: 'left' }}>
+                      <span className="text-muted" style={{ fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase' }}>Média KM por Dia Ativo</span>
+                      <p style={{ fontSize: '1.8rem', margin: '4px 0 0 0', fontWeight: 800 }}>{mediaKmPorDia} km</p>
+                      <small className="text-muted" style={{ fontSize: '0.7rem' }}>Total de {totalKm} km rodados em {diasAtivos} dias de serviço</small>
+                    </div>
+                  </div>
+
+                  {/* KPI Defeitos */}
+                  <div 
+                    className="stat-card" 
+                    onClick={() => setExpandirTiposManutencao(!expandirTiposManutencao)}
+                    style={{ 
+                      borderTop: '4px solid var(--status-alteration)', 
+                      padding: '1.25rem', 
+                      cursor: 'pointer',
+                      transition: 'all 0.2s ease',
+                      border: expandirTiposManutencao ? '1px solid var(--status-alteration)' : '1px solid var(--border-color)',
+                      borderTopWidth: '4px',
+                      height: '100%'
+                    }}
+                  >
+                    <div className="stat-icon" style={{ backgroundColor: 'rgba(239, 68, 68, 0.1)', color: 'var(--status-alteration)' }}>
+                      <AlertTriangle size={24} />
+                    </div>
+                    <div className="stat-info" style={{ textAlign: 'left', width: '100%' }}>
+                      <div className="flex-between" style={{ alignItems: 'flex-start' }}>
+                        <span className="text-muted" style={{ fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase' }}>Defeitos / Ocorrências</span>
+                        <span className="badge badge-alert" style={{ fontSize: '0.7rem', padding: '2px 8px' }}>
+                          {expandirTiposManutencao ? 'Fechar' : 'Clique para ver'}
+                        </span>
+                      </div>
+                      <p style={{ fontSize: '1.8rem', margin: '4px 0 0 0', fontWeight: 800 }}>{totalDefeitos}</p>
+                      <small className="text-muted" style={{ fontSize: '0.7rem' }}>Chamados e manutenções registradas</small>
+                    </div>
+                  </div>
+
+                </div>
+
+                {/* Painel de detalhamento de manutenções expansível */}
+                {expandirTiposManutencao && (
+                  <div className="card fade-in" style={{ padding: '1.5rem', marginBottom: '1.5rem', border: '1px solid var(--border-color)', borderRadius: '12px' }}>
+                    <h4 style={{ margin: '0 0 1.25rem 0', color: 'var(--text-main)', fontSize: '1rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
+                      Detalhamento de Manutenções por Categoria
+                    </h4>
+                    {totalDefeitos === 0 ? (
+                      <p className="text-muted" style={{ fontSize: '0.85rem', textAlign: 'center', margin: '1rem 0' }}>Nenhuma ocorrência ou defeito registrado para esta viatura.</p>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                        {Object.entries(contagemTipos).map(([tipo, qtd]) => {
+                          const percentual = totalDefeitos > 0 ? ((qtd / totalDefeitos) * 100).toFixed(0) : 0;
+                          return (
+                            <div key={tipo}>
+                              <div className="flex-between" style={{ marginBottom: '6px', fontSize: '0.85rem' }}>
+                                <span style={{ fontWeight: 600 }}>{tipo}</span>
+                                <span className="badge badge-secondary" style={{ display: 'inline-flex', gap: '6px', fontWeight: 'bold' }}>
+                                  {qtd} {qtd === 1 ? 'registro' : 'registros'} ({percentual}%)
+                                </span>
+                              </div>
+                              <div style={{ height: '8px', background: 'var(--hover-bg)', borderRadius: '4px', overflow: 'hidden' }}>
+                                <div 
+                                  style={{ 
+                                    width: `${percentual}%`, 
+                                    height: '100%', 
+                                    background: tipo === 'Motor / Óleo' ? 'var(--bm-gold)' : tipo === 'Elétrica' ? '#3b82f6' : tipo === 'Freios' ? 'var(--status-alteration)' : tipo === 'Suspensão / Pneus' ? '#10b981' : '#6b7280', 
+                                    borderRadius: '4px',
+                                    transition: 'width 0.8s ease'
+                                  }}
+                                ></div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="card table-wrapper">
+              <table className="table">
+                <thead>
+                  <tr>
+                    {!filtroVtr && <th>VTR</th>}
+                    <th>Motorista</th>
+                    <th>Início / Fim</th>
+                    <th>Quilometragem</th>
+                    <th>Distância Rodada</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {historico.length === 0 ? (
+                    <tr>
+                      <td colSpan={filtroVtr ? 4 : 5} style={{ textAlign: 'center', padding: '2rem 0', color: 'var(--text-muted)' }}>
+                        Nenhum registro de turno encontrado.
+                      </td>
+                    </tr>
+                  ) : (
+                    historico.map(log => {
+                      const dist = log.km_final && log.km_inicial ? log.km_final - log.km_inicial : null;
+                      return (
+                        <tr key={log.id}>
+                          {!filtroVtr && (
+                            <td>
+                              <strong className="link-prefix" onClick={() => setServicoSelecionado(log)} style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                                <Car size={16} color="var(--bm-green)" /> {log.prefixo_vtr}
+                              </strong>
+                            </td>
+                          )}
+                          <td>
+                            <strong>{log.motorista}</strong>
+                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>ID: {log.matricula_assuncao || 'N/A'}</div>
+                          </td>
+                          <td>
+                            <div style={{ fontSize: '0.8rem' }}>🏁 Início: {formatarData(log.hora_inicial)}</div>
+                            <div style={{ fontSize: '0.8rem', color: log.hora_final ? 'inherit' : 'var(--status-available)', fontWeight: log.hora_final ? 'normal' : 'bold' }}>
+                              🏁 Fim: {log.hora_final ? formatarData(log.hora_final) : 'Em curso ➔'}
+                            </div>
+                          </td>
+                          <td>
+                            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Inicial: {log.km_inicial} km</div>
+                            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Final: {log.km_final ? `${log.km_final} km` : '---'}</div>
+                          </td>
+                          <td>
+                            {dist !== null ? (
+                              <span className="badge badge-secondary" style={{ fontWeight: 'bold' }}>
+                                +{dist} km
+                              </span>
+                            ) : (
+                              <span className="text-muted" style={{ fontSize: '0.85rem' }}>-</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })()}
 
       {viewMode === 'acessos' && (
         <div className="fade-in">
@@ -2297,6 +2878,7 @@ export default function Admin() {
                     <td>
                       <div style={{ display: 'flex', gap: '8px' }}>
                         <button className="btn-icon" onClick={() => abrirEdicaoMotorista(mot)} title="Editar"><Edit size={16} /></button>
+                        <button className="btn-icon" onClick={() => enviarLinkResetWhatsapp(mot)} title="Enviar Link de Recuperação via WhatsApp" style={{ color: 'var(--bm-green)' }}><Zap size={16} /></button>
                         <button className="btn-icon" onClick={() => excluirMotorista(mot.id)} title="Excluir"><Trash2 size={16} /></button>
                       </div>
                     </td>

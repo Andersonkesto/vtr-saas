@@ -3,7 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { doc, getDoc, updateDoc, addDoc, collection, serverTimestamp, query, orderBy, onSnapshot, setDoc } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '../firebase';
-import { ShieldAlert, CheckCircle, Car, AlertCircle, ClipboardCheck, MapPin, Camera, List, ChevronRight, AlertTriangle, Info, CheckCircle2, User, LogOut, UserPlus, Download } from 'lucide-react';
+import { ShieldAlert, CheckCircle, Car, AlertCircle, ClipboardCheck, MapPin, Camera, List, ChevronRight, AlertTriangle, Info, CheckCircle2, User, LogOut, UserPlus, Download, X } from 'lucide-react';
 
 /**
  * Componente: Viatura (Página Operacional - Mobile/Front-end)
@@ -85,6 +85,16 @@ export default function Viatura() {
   const [authTelefone, setAuthTelefone] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
 
+  // Estados para Recuperação e Redefinição de Senha
+  const [showRecoverModal, setShowRecoverModal] = useState(false);
+  const [recoverMatricula, setRecoverMatricula] = useState('');
+  const [recovering, setRecovering] = useState(false);
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [resetMatricula, setResetMatricula] = useState('');
+  const [resetToken, setResetToken] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [resetting, setResetting] = useState(false);
+
   // PWA Install Prompt
   const [deferredPrompt, setDeferredPrompt] = useState(null);
 
@@ -165,6 +175,177 @@ export default function Viatura() {
     }
   }, [meUser]);
 
+  // Effect para detectar token de redefinição de senha via query params (?reset_matricula=X&reset_token=Y)
+  useEffect(() => {
+    const searchParams = new URLSearchParams(window.location.search);
+    const resetMat = searchParams.get('reset_matricula');
+    const resetTok = searchParams.get('reset_token');
+
+    if (resetMat && resetTok) {
+      const validarToken = async () => {
+        try {
+          const docSnap = await getDoc(doc(db, 'motoristas', resetMat));
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            if (data.reset_token === resetTok && data.reset_token_expires && Date.now() < data.reset_token_expires) {
+              setResetMatricula(resetMat);
+              setResetToken(resetTok);
+              setShowResetModal(true);
+            } else {
+              showAlert("Link Expirado ou Inválido", "Este link de recuperação de senha já expirou (validade de 15 minutos) ou é inválido.", "danger", () => {
+                navigate(window.location.pathname, { replace: true });
+              });
+            }
+          } else {
+            showAlert("Erro", "Motorista correspondente não encontrado.", "danger", () => {
+              navigate(window.location.pathname, { replace: true });
+            });
+          }
+        } catch (err) {
+          console.error("Erro ao validar token:", err);
+          showAlert("Erro de Conexão", "Não foi possível validar o token de redefinição de senha.", "danger", () => {
+            navigate(window.location.pathname, { replace: true });
+          });
+        }
+      };
+
+      validarToken();
+    }
+  }, [window.location.search]);
+
+  const handleRequestRecovery = async (e) => {
+    e.preventDefault();
+    if (recoverMatricula.length !== 7) {
+      showAlert("Atenção", "A matrícula deve ter 7 números.", "warning");
+      return;
+    }
+    setRecovering(true);
+    try {
+      const motDocRef = doc(db, 'motoristas', recoverMatricula);
+      const motSnap = await getDoc(motDocRef);
+      if (!motSnap.exists()) {
+        showAlert("Erro", "Matrícula não cadastrada no sistema.", "danger");
+        setRecovering(false);
+        return;
+      }
+      const motData = motSnap.data();
+      if (!motData.telefone) {
+        showAlert("Erro", "Não há telefone cadastrado para esta matrícula. Entre em contato com a administração/P4.", "danger");
+        setRecovering(false);
+        return;
+      }
+
+      const token = Math.random().toString(36).substring(2, 8).toUpperCase();
+      const expiresAt = Date.now() + 15 * 60 * 1000; // 15 minutos
+
+      await updateDoc(motDocRef, {
+        reset_token: token,
+        reset_token_expires: expiresAt
+      });
+
+      const waSnap = await getDoc(doc(db, 'settings', 'whatsapp'));
+      if (waSnap.exists()) {
+        const waConfig = waSnap.data();
+        if (waConfig.enabled && waConfig.url && waConfig.instance && waConfig.apikey) {
+          let baseUrl = waConfig.url.trim();
+          if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
+
+          const resetLink = `${window.location.origin}/vtr?reset_matricula=${recoverMatricula}&reset_token=${token}`;
+          const msg = `🔔 *VTR SaaS - Recuperação de Senha* 🔔\n\n` +
+            `Olá, *${motData.graduacao} ${motData.nome}*!\n\n` +
+            `Recebemos uma solicitação para redefinir a sua senha de acesso ao sistema VTR SaaS.\n\n` +
+            `Para definir uma nova senha, clique no link seguro abaixo (válido por 15 minutos):\n` +
+            `👉 ${resetLink}\n\n` +
+            `Caso você não tenha solicitado esta redefinição, pedimos que ignore esta mensagem.\n\n` +
+            `*VTR SaaS - por SD Anderson*`;
+
+          const headers = { 'Content-Type': 'application/json', 'apikey': waConfig.apikey.trim() };
+          const endpoint = `${baseUrl}/message/sendText/${waConfig.instance.trim()}`;
+
+          const foneLimpo = motData.telefone.replace(/\D/g, '');
+          const foneFormatado = foneLimpo && !foneLimpo.startsWith('55') && (foneLimpo.length === 10 || foneLimpo.length === 11) ? '55' + foneLimpo : foneLimpo;
+
+          if (foneFormatado) {
+            const response = await fetch(endpoint, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({
+                number: foneFormatado,
+                textMessage: { text: msg }
+              })
+            });
+
+            if (response.ok) {
+              showAlert("Sucesso!", "Link de recuperação enviado com sucesso via WhatsApp!", "success", () => {
+                setShowRecoverModal(false);
+                setRecoverMatricula('');
+              });
+            } else {
+              const errorMsg = await response.text();
+              console.error("Erro Evolution API:", errorMsg);
+              showAlert("Erro de Envio", "Não foi possível disparar a mensagem pelo WhatsApp. Evolution API retornou erro.", "danger");
+            }
+          } else {
+            showAlert("Erro de Contato", "O número de telefone registrado possui formato inválido.", "danger");
+          }
+        } else {
+          showAlert("Integração Inativa", "A recuperação de senha via WhatsApp não está ativada ou configurada na central.", "warning");
+        }
+      } else {
+        showAlert("Integração Inativa", "A recuperação de senha via WhatsApp não está configurada.", "warning");
+      }
+    } catch (err) {
+      console.error(err);
+      showAlert("Erro", "Erro ao tentar processar a solicitação de recuperação.", "danger");
+    } finally {
+      setRecovering(false);
+    }
+  };
+
+  const handleResetPassword = async (e) => {
+    e.preventDefault();
+    if (newPassword.length < 6) {
+      showAlert("Atenção", "A nova senha deve ter no mínimo 6 caracteres.", "warning");
+      return;
+    }
+    setResetting(true);
+    try {
+      const motDocRef = doc(db, 'motoristas', resetMatricula);
+      const docSnap = await getDoc(motDocRef);
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data.reset_token === resetToken && data.reset_token_expires && Date.now() < data.reset_token_expires) {
+          await updateDoc(motDocRef, {
+            senha: newPassword,
+            reset_token: null,
+            reset_token_expires: null,
+            atualizado_em: serverTimestamp()
+          });
+
+          showAlert("Sucesso!", "Sua senha foi redefinida com sucesso! Faça login agora.", "success", () => {
+            setShowResetModal(false);
+            setNewPassword('');
+            setResetMatricula('');
+            setResetToken('');
+            navigate(window.location.pathname, { replace: true });
+          });
+        } else {
+          showAlert("Token Expirado", "O link de redefinição expirou durante o preenchimento.", "danger", () => {
+            setShowResetModal(false);
+            navigate(window.location.pathname, { replace: true });
+          });
+        }
+      } else {
+        showAlert("Erro", "Cadastro do motorista não foi encontrado.", "danger");
+      }
+    } catch (err) {
+      console.error(err);
+      showAlert("Erro", "Não foi possível redefinir sua senha.", "danger");
+    } finally {
+      setResetting(false);
+    }
+  };
+
   const handleLoginMe = async (e) => {
     e.preventDefault();
     if (!authMatricula || !authSenha) return;
@@ -177,6 +358,8 @@ export default function Viatura() {
           const userData = { matricula: authMatricula, graduacao: data.graduacao, nome: data.nome, telefone: data.telefone, expiresAt: Date.now() + 30 * 60 * 1000 };
           setMeUser(userData);
           localStorage.setItem('vtr_me_user', JSON.stringify(userData));
+          if (prefixo) navigate(`/vtr/${prefixo}`);
+          else navigate('/vtr');
         } else {
           showAlert("Erro", "Senha incorreta.", "danger");
         }
@@ -220,7 +403,10 @@ export default function Viatura() {
       setMeUser(userData);
       localStorage.setItem('vtr_me_user', JSON.stringify(userData));
 
-      showAlert("Sucesso", "Cadastro realizado com sucesso! Bem-vindo.", "success");
+      showAlert("Sucesso", "Cadastro realizado com sucesso! Bem-vindo.", "success", () => {
+        if (prefixo) navigate(`/vtr/${prefixo}`);
+        else navigate('/vtr');
+      });
     } catch (err) {
       console.error(err);
       showAlert("Erro", "Falha ao realizar cadastro.", "danger");
@@ -380,7 +566,7 @@ export default function Viatura() {
               loggedRef.current = true;
             }
           } else {
-            setError(`Viatura ${prefixo} não encontrada no sistema.`);
+            setError(`Viatura ${prefixo} não cadastrada. Entre em contato com o P4 da 1ª CIA.`);
           }
         } catch (err) {
           console.error(err);
@@ -410,6 +596,12 @@ export default function Viatura() {
     if (!realizouGalope) {
       setTentouSubmeter(true);
       showAlert("Atenção Obrigatória", "Você deve confirmar que realizou o G.A.L.O.P.E antes de assumir a viatura.", "danger");
+      return;
+    }
+
+    if (temAlteracaoInicial && !descAlteracaoInicial.trim()) {
+      setTentouSubmeter(true);
+      showAlert("Descrição Obrigatória", "Você marcou que identificou uma alteração. Por favor, descreva o problema.", "warning");
       return;
     }
 
@@ -469,8 +661,8 @@ export default function Viatura() {
               `*Finalidade:* ${finalidade}\n` +
               `*G.A.L.O.P.E. Realizado:* Sim ✅\n` +
               `*Observações/Alterações:* ${temAlteracaoInicial ? descAlteracaoInicial : 'Sem alterações'}\n\n` +
-              `*Hora:* ${new Date().toLocaleString('pt-BR')}` +
-              `*Desenvolvido por:* Sd Anderson`;
+              `*Hora:* ${new Date().toLocaleString('pt-BR')}\n\n` +
+              `*Desenvolvido por:*\n> Sd Anderson`;
 
             const headers = { 'Content-Type': 'application/json', 'apikey': waConfig.apikey.trim() };
             const endpoint = `${baseUrl}/message/sendText/${waConfig.instance.trim()}`;
@@ -518,6 +710,12 @@ export default function Viatura() {
 
       if (matriculaConfirmacao !== viatura.matricula_ativa) {
         showAlert("Matrícula Incorreta", "A matrícula informada não confere com quem assumiu a VTR.", "danger");
+        setSubmitting(false);
+        return;
+      }
+
+      if (comAlteracao && !descAlteracao.trim()) {
+        showAlert("Descrição Obrigatória", "Você marcou que houve alteração na viatura durante o serviço. Por favor, descreva o problema.", "warning");
         setSubmitting(false);
         return;
       }
@@ -585,8 +783,8 @@ export default function Viatura() {
               `*KM Final:* ${kmFinal} km\n` +
               `*KM Percorrido:* ${Number(kmFinal) - (viatura.km_atual || 0)} km\n` +
               `*Observações/Alterações:* ${comAlteracao ? descAlteracao : 'Sem alterações'}\n\n` +
-              `*Hora:* ${new Date().toLocaleString('pt-BR')}` +
-              `*Desenvolvido por:* Sd Anderson`;
+              `*Hora:* ${new Date().toLocaleString('pt-BR')}\n\n` +
+              `*Desenvolvido por:*\n> Sd Anderson`;
 
             const headers = { 'Content-Type': 'application/json', 'apikey': waConfig.apikey.trim() };
             const endpoint = `${baseUrl}/message/sendText/${waConfig.instance.trim()}`;
@@ -621,17 +819,109 @@ export default function Viatura() {
     }
   };
 
+  if (loading) {
+    return (
+      <div className="container fade-in" style={{ maxWidth: '500px', marginLeft: 'auto', marginRight: 'auto', marginTop: '2rem' }}>
+        <div className="skeleton skeleton-card" style={{ height: '120px' }}></div>
+        <div className="skeleton skeleton-card" style={{ height: '400px' }}></div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="container card" style={{ textAlign: 'center', marginTop: '2rem' }}>
+        <ShieldAlert size={48} color="var(--status-alteration)" style={{ margin: '0 auto 1rem' }} />
+        <h2 style={{ color: 'var(--status-alteration)' }}>Atenção</h2>
+        <p style={{ marginTop: '1rem' }}>{error}</p>
+        <button onClick={() => navigate('/vtr')} className="btn btn-secondary" style={{ marginTop: '1.5rem' }}>Ver todas as VTRs</button>
+      </div>
+    );
+  }
+
   // Tela de Login/Cadastro do ME
   if (!meUser) {
     return (
       <div className="fade-in container" style={{ maxWidth: '400px', marginTop: '2rem' }}>
         <ModalAlert open={modalAlert.open} title={modalAlert.title} message={modalAlert.message} type={modalAlert.type} onConfirm={modalAlert.onConfirm} />
 
+        {showRecoverModal && (
+          <div className="modal-overlay" onClick={() => !recovering && setShowRecoverModal(false)} style={{ zIndex: 1500 }}>
+            <div className="modal-content fade-in" onClick={e => e.stopPropagation()} style={{ borderTopColor: 'var(--bm-gold)' }}>
+              <div className="flex-between">
+                <h3>Recuperar Senha</h3>
+                <button type="button" onClick={() => !recovering && setShowRecoverModal(false)} className="btn-icon" style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}><X size={20} /></button>
+              </div>
+              <p className="text-muted" style={{ fontSize: '0.85rem', marginTop: '0.5rem', textAlign: 'left' }}>
+                Insira sua matrícula funcional de 7 dígitos. O sistema enviará um link de redefinição de senha seguro diretamente para o seu WhatsApp cadastrado.
+              </p>
+              <form onSubmit={handleRequestRecovery} style={{ textAlign: 'left', marginTop: '1.5rem' }}>
+                <div className="form-group">
+                  <label className="form-label">Matrícula (7 dígitos)</label>
+                  <input
+                    type="text"
+                    className="form-input"
+                    required
+                    maxLength={7}
+                    value={recoverMatricula}
+                    onChange={e => setRecoverMatricula(e.target.value.replace(/\D/g, ''))}
+                    placeholder="0000000"
+                    disabled={recovering}
+                    style={{ letterSpacing: '2px', fontWeight: 'bold' }}
+                  />
+                </div>
+                <div className="modal-confirm-buttons" style={{ marginTop: '1.5rem' }}>
+                  <button type="button" className="btn btn-secondary" onClick={() => setShowRecoverModal(false)} disabled={recovering}>Cancelar</button>
+                  <button type="submit" className="btn" disabled={recovering || recoverMatricula.length !== 7} style={{ backgroundColor: 'var(--bm-gold)', color: 'white' }}>
+                    {recovering ? 'Enviando...' : 'Enviar pelo WhatsApp'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {showResetModal && (
+          <div className="modal-overlay" style={{ zIndex: 1500 }}>
+            <div className="modal-content fade-in" onClick={e => e.stopPropagation()} style={{ borderTopColor: 'var(--bm-green)' }}>
+              <h3>Nova Senha de Acesso</h3>
+              <p className="text-muted" style={{ fontSize: '0.85rem', marginTop: '0.5rem', textAlign: 'left' }}>
+                Defina uma nova senha forte para a matrícula <strong>{resetMatricula}</strong>. A senha deve conter pelo menos 6 caracteres.
+              </p>
+              <form onSubmit={handleResetPassword} style={{ textAlign: 'left', marginTop: '1.5rem' }}>
+                <div className="form-group">
+                  <label className="form-label">Nova Senha</label>
+                  <input
+                    type="password"
+                    className="form-input"
+                    required
+                    value={newPassword}
+                    onChange={e => setNewPassword(e.target.value)}
+                    placeholder="Crie uma nova senha"
+                    disabled={resetting}
+                    minLength={6}
+                  />
+                </div>
+                <div className="modal-confirm-buttons" style={{ marginTop: '1.5rem' }}>
+                  <button type="submit" className="btn btn-primary" disabled={resetting || newPassword.length < 6}>
+                    {resetting ? 'Redefinindo...' : 'Salvar Nova Senha'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
         <div className="card" style={{ textAlign: 'center' }}>
           <div style={{ backgroundColor: 'var(--bm-gold)', width: '64px', height: '64px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem' }}>
             <User size={32} color="white" />
           </div>
           <h2 style={{ color: 'var(--text-main)', marginBottom: '0.5rem' }}>Acesso ME</h2>
+          {prefixo && (
+            <h3 style={{ color: 'var(--bm-gold)', marginBottom: '0.5rem', fontWeight: 'bold' }}>
+              VTR {prefixo}
+            </h3>
+          )}
           <p className="text-muted" style={{ marginBottom: '1.5rem', fontSize: '0.9rem' }}>
             {isRegistering ? 'Preencha seus dados para criar o cadastro.' : 'Faça login com sua matrícula e senha.'}
           </p>
@@ -645,13 +935,18 @@ export default function Viatura() {
               <div className="form-group">
                 <label className="form-label">Senha</label>
                 <input type="password" className="form-input" required value={authSenha} onChange={e => setAuthSenha(e.target.value)} placeholder="Sua senha de acesso" />
+                <div style={{ textAlign: 'right', marginTop: '0.25rem' }}>
+                  <button type="button" onClick={() => { setShowRecoverModal(true); setRecoverMatricula(authMatricula); }} style={{ background: 'none', border: 'none', color: 'var(--bm-gold)', fontSize: '0.8rem', cursor: 'pointer', textDecoration: 'underline', padding: 0 }}>
+                    Esqueci minha senha
+                  </button>
+                </div>
               </div>
               <button type="submit" className="btn btn-primary" disabled={authLoading} style={{ marginTop: '1rem' }}>
                 {authLoading ? 'Acessando...' : 'Entrar'}
               </button>
               <div style={{ textAlign: 'center', marginTop: '1.5rem' }}>
                 <p style={{ fontSize: '0.85rem' }}>Não possui cadastro?</p>
-                <button type="button" onClick={() => setIsRegistering(true)} style={{ background: 'none', border: 'none', color: 'var(--bm-green)', fontWeight: 600, cursor: 'pointer', marginTop: '0.25rem', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                <button type="button" onClick={() => { setIsRegistering(true); if(prefixo) navigate(`/vtr/${prefixo}`); }} style={{ background: 'none', border: 'none', color: 'var(--bm-green)', fontWeight: 600, cursor: 'pointer', marginTop: '0.25rem', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                   <UserPlus size={16} /> Cadastre-se rapidamente
                 </button>
               </div>
@@ -691,7 +986,7 @@ export default function Viatura() {
               </button>
 
               <div style={{ textAlign: 'center', marginTop: '1.5rem' }}>
-                <button type="button" onClick={() => setIsRegistering(false)} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '0.85rem', cursor: 'pointer', textDecoration: 'underline' }}>
+                <button type="button" onClick={() => { setIsRegistering(false); if(prefixo) navigate(`/vtr/${prefixo}`); }} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '0.85rem', cursor: 'pointer', textDecoration: 'underline' }}>
                   Já tenho cadastro (Voltar ao Login)
                 </button>
               </div>
@@ -702,14 +997,6 @@ export default function Viatura() {
     );
   }
 
-  if (loading) {
-    return (
-      <div className="container fade-in" style={{ maxWidth: '500px', marginLeft: 'auto', marginRight: 'auto', marginTop: '2rem' }}>
-        <div className="skeleton skeleton-card" style={{ height: '120px' }}></div>
-        <div className="skeleton skeleton-card" style={{ height: '400px' }}></div>
-      </div>
-    );
-  }
 
   // Visualização de Listagem Geral
   if (!prefixo) {
@@ -746,31 +1033,33 @@ export default function Viatura() {
 
         <div className="grid-list">
           {listaViaturas.map(vtr => (
-            <Link key={vtr.id} to={`/vtr/${vtr.prefixo}`} className="vtr-list-item card" style={{ textDecoration: 'none', color: 'inherit', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderLeft: `6px solid ${vtr.status === 'disponivel' ? '#10b981' : vtr.status === 'em_servico' ? '#3b82f6' : '#f59e0b'}` }}>
-              <div>
-                <h3 style={{ margin: 0 }}>VTR {vtr.prefixo}</h3>
-                <span className={`badge ${vtr.status === 'disponivel' ? 'badge-available' : vtr.status === 'em_servico' ? 'badge-inservice' : 'badge-alert'}`} style={{ marginTop: '4px', display: 'inline-block' }}>
-                  {vtr.status === 'disponivel' ? 'Disponível' : vtr.status === 'em_servico' ? 'Em Uso' : 'Baixada'}
-                </span>
+            vtr.status === 'baixada' ? (
+              <div key={vtr.id} className="vtr-list-item card" style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderLeft: `6px solid #f59e0b` }} onClick={() => showAlert("Viatura Baixada", `A VTR ${vtr.prefixo} está indisponível para assunção até liberação no painel administrativo.`, "warning")}>
+                <div>
+                  <h3 style={{ margin: 0 }}>VTR {vtr.prefixo}</h3>
+                  <span className="badge badge-alert" style={{ marginTop: '4px', display: 'inline-block' }}>
+                    Baixada
+                  </span>
+                </div>
+                <AlertTriangle size={20} color="var(--status-warning)" />
               </div>
-              <ChevronRight size={20} color="var(--text-muted)" />
-            </Link>
+            ) : (
+              <Link key={vtr.id} to={`/vtr/${vtr.prefixo}`} className="vtr-list-item card" style={{ textDecoration: 'none', color: 'inherit', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderLeft: `6px solid ${vtr.status === 'disponivel' ? '#10b981' : '#3b82f6'}` }}>
+                <div>
+                  <h3 style={{ margin: 0 }}>VTR {vtr.prefixo}</h3>
+                  <span className={`badge ${vtr.status === 'disponivel' ? 'badge-available' : 'badge-inservice'}`} style={{ marginTop: '4px', display: 'inline-block' }}>
+                    {vtr.status === 'disponivel' ? 'Disponível' : 'Em Uso'}
+                  </span>
+                </div>
+                <ChevronRight size={20} color="var(--text-muted)" />
+              </Link>
+            )
           ))}
         </div>
       </div>
     );
   }
 
-  if (error) {
-    return (
-      <div className="container card" style={{ textAlign: 'center', marginTop: '2rem' }}>
-        <ShieldAlert size={48} color="var(--status-alteration)" style={{ margin: '0 auto 1rem' }} />
-        <h2 style={{ color: 'var(--status-alteration)' }}>Atenção</h2>
-        <p style={{ marginTop: '1rem' }}>{error}</p>
-        <button onClick={() => navigate('/vtr')} className="btn btn-secondary" style={{ marginTop: '1.5rem' }}>Ver todas as VTRs</button>
-      </div>
-    );
-  }
 
   // Caso a VTR esteja BAIXADA
   if (viatura.status === 'baixada') {
@@ -884,10 +1173,16 @@ export default function Viatura() {
               </p>
 
               <div style={{ marginTop: '1rem', borderTop: `1px solid var(--badge-inservice-text)`, paddingTop: '0.75rem' }}>
-                <label className="checkbox-group">
-                  <input type="checkbox" checked={temAlteracaoInicial} onChange={(e) => setTemAlteracaoInicial(e.target.checked)} />
-                  <span>Identificou alguma alteração ao assumir?</span>
-                </label>
+                <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                  <label className="checkbox-group">
+                    <input type="checkbox" checked={temAlteracaoInicial} onChange={() => setTemAlteracaoInicial(true)} />
+                    <span>Identificou alguma alteração ao assumir?</span>
+                  </label>
+                  <label className="checkbox-group">
+                    <input type="checkbox" checked={!temAlteracaoInicial} onChange={() => setTemAlteracaoInicial(false)} />
+                    <span>Sem Alteração</span>
+                  </label>
+                </div>
                 {temAlteracaoInicial && (
                   <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                     <textarea
@@ -958,12 +1253,20 @@ export default function Viatura() {
             </div>
 
             <div className="form-group" style={{ backgroundColor: 'var(--hover-bg)', padding: '1rem', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
-              <label className="checkbox-group">
-                <input type="checkbox" checked={comAlteracao} onChange={(e) => setComAlteracao(e.target.checked)} />
-                <span style={{ fontWeight: 600, color: comAlteracao ? 'var(--status-alteration)' : 'var(--text-main)' }}>
-                  Houve Alteração na Viatura durante o serviço?
-                </span>
-              </label>
+              <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                <label className="checkbox-group">
+                  <input type="checkbox" checked={comAlteracao} onChange={() => setComAlteracao(true)} />
+                  <span style={{ fontWeight: 600, color: comAlteracao ? 'var(--status-alteration)' : 'var(--text-main)' }}>
+                    Houve Alteração na Viatura durante o serviço?
+                  </span>
+                </label>
+                <label className="checkbox-group">
+                  <input type="checkbox" checked={!comAlteracao} onChange={() => setComAlteracao(false)} />
+                  <span style={{ fontWeight: 600, color: !comAlteracao ? 'var(--status-available)' : 'var(--text-main)' }}>
+                    Sem Alteração
+                  </span>
+                </label>
+              </div>
               {comAlteracao && (
                 <div style={{ marginTop: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                   <div>
