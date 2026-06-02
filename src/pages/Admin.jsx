@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { collection, onSnapshot, doc, setDoc, query, orderBy, limit, getDocs, getDoc, where, deleteDoc, updateDoc, addDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, onSnapshot, doc, setDoc, query, orderBy, limit, getDocs, getDoc, where, deleteDoc, updateDoc, addDoc, serverTimestamp, Timestamp } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { PlusCircle, History, Car, AlertTriangle, QrCode, X, Edit, Settings, Trash2, Filter, Eye, Monitor, Smartphone, Activity, ClipboardCheck, Wrench, CheckCircle2, BarChart3, TrendingUp, ShieldCheck, MapPin, Download, ImageIcon, Maximize2, AlertCircle, ShieldAlert, Info, Gauge, Zap, Users, BookOpen } from 'lucide-react';
 import { QRCodeSVG, QRCodeCanvas } from 'qrcode.react';
@@ -139,6 +139,21 @@ export default function Admin() {
   const [kmFinalForcado, setKmFinalForcado] = useState(0);
   const [obsFimForcado, setObsFimForcado] = useState('');
   const [encerrandoForcado, setEncerrandoForcado] = useState(false);
+  const [vtrUsoManualModal, setVtrUsoManualModal] = useState(null);
+  const [usoManualForm, setUsoManualForm] = useState({
+    dataInicio: '',
+    horaInicio: '',
+    dataFim: '',
+    horaFim: '',
+    motorista: '',
+    patrulheiro: '',
+    matricula: '',
+    kmInicial: '',
+    kmFinal: '',
+    finalidade: 'Patrulhamento Ostensivo',
+    observacao: ''
+  });
+  const [salvandoUsoManual, setSalvandoUsoManual] = useState(false);
 
   useEffect(() => {
     const qVtr = query(collection(db, 'viaturas'), orderBy('prefixo'));
@@ -840,6 +855,111 @@ export default function Admin() {
     }
   };
 
+  const abrirUsoManual = (vtr) => {
+    const agora = new Date();
+    const dataHoje = new Date(agora.getTime() - agora.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+    const horaAgora = agora.toTimeString().slice(0, 5);
+
+    setVtrUsoManualModal(vtr);
+    setUsoManualForm({
+      dataInicio: dataHoje,
+      horaInicio: horaAgora,
+      dataFim: dataHoje,
+      horaFim: horaAgora,
+      motorista: '',
+      patrulheiro: '',
+      matricula: '',
+      kmInicial: vtr.km_atual ?? '',
+      kmFinal: vtr.km_atual ?? '',
+      finalidade: 'Patrulhamento Ostensivo',
+      observacao: ''
+    });
+    setSalvandoUsoManual(false);
+  };
+
+  const atualizarUsoManual = (campo, valor) => {
+    setUsoManualForm(prev => ({ ...prev, [campo]: valor }));
+  };
+
+  const confirmarUsoManual = async () => {
+    if (!vtrUsoManualModal || salvandoUsoManual) return;
+
+    const kmInicialNum = Number(usoManualForm.kmInicial);
+    const kmFinalNum = Number(usoManualForm.kmFinal);
+    const inicio = new Date(`${usoManualForm.dataInicio}T${usoManualForm.horaInicio || '00:00'}`);
+    const fim = new Date(`${usoManualForm.dataFim}T${usoManualForm.horaFim || '00:00'}`);
+
+    if (vtrUsoManualModal.status === 'em_servico') {
+      showConfirm("VTR em Serviço", "Finalize ou force o encerramento do turno ativo antes de lançar um uso físico retroativo.", "warning", () => { }, () => { });
+      return;
+    }
+
+    if (!usoManualForm.motorista.trim() || !usoManualForm.matricula.trim() || usoManualForm.matricula.length !== 7) {
+      showConfirm("Dados Obrigatórios", "Informe o motorista e a matrícula com 7 números.", "warning", () => { }, () => { });
+      return;
+    }
+
+    if (!usoManualForm.dataInicio || !usoManualForm.dataFim || Number.isNaN(inicio.getTime()) || Number.isNaN(fim.getTime()) || fim < inicio) {
+      showConfirm("Período Inválido", "Informe data e hora válidas; o fim não pode ser anterior ao início.", "warning", () => { }, () => { });
+      return;
+    }
+
+    if (Number.isNaN(kmInicialNum) || Number.isNaN(kmFinalNum) || kmFinalNum < kmInicialNum) {
+      showConfirm("Erro de KM", "O KM final não pode ser menor que o KM inicial.", "warning", () => { }, () => { });
+      return;
+    }
+
+    setSalvandoUsoManual(true);
+    try {
+      await addDoc(collection(db, 'servicos'), {
+        prefixo_vtr: vtrUsoManualModal.prefixo,
+        motorista: usoManualForm.motorista.trim(),
+        patrulheiro: usoManualForm.patrulheiro.trim(),
+        km_inicial: kmInicialNum,
+        km_final: kmFinalNum,
+        finalidade: usoManualForm.finalidade,
+        galope_realizado: true,
+        alteracao_inicial: null,
+        matricula_assuncao: usoManualForm.matricula,
+        hora_inicial: Timestamp.fromDate(inicio),
+        hora_final: Timestamp.fromDate(fim),
+        timestamp: Timestamp.fromDate(inicio),
+        com_alteracao: false,
+        descricao_alteracao: null,
+        lancamento_manual: true,
+        origem_lancamento: 'Diário de bordo físico',
+        observacao_admin: usoManualForm.observacao.trim() || null,
+        criado_em: serverTimestamp()
+      });
+
+      if (kmFinalNum > (vtrUsoManualModal.km_atual || 0)) {
+        await updateDoc(doc(db, 'viaturas', vtrUsoManualModal.id), {
+          km_atual: kmFinalNum
+        });
+      }
+
+      await registrarAuditoria('LANCAMENTO_USO_FISICO_VIATURA', {
+        prefixo: vtrUsoManualModal.prefixo,
+        motorista: usoManualForm.motorista.trim(),
+        matricula: usoManualForm.matricula,
+        km_inicial: kmInicialNum,
+        km_final: kmFinalNum,
+        inicio: inicio.toISOString(),
+        fim: fim.toISOString(),
+        observacao: usoManualForm.observacao
+      });
+
+      const prefixoLancado = vtrUsoManualModal.prefixo;
+      setVtrUsoManualModal(null);
+      showConfirm("Sucesso", `Uso físico da VTR ${prefixoLancado} lançado no histórico.`, "success", () => { }, () => { });
+    } catch (e) {
+      console.error("Erro ao lançar uso físico:", e);
+      showConfirm("Erro", "Não foi possível lançar o uso físico no histórico.", "danger", () => { }, () => { });
+    } finally {
+      setSalvandoUsoManual(false);
+    }
+  };
+
   const enviarLinkResetWhatsapp = async (mot) => {
     if (!mot.telefone) {
       showConfirm("Aviso", `O motorista ${mot.graduacao} ${mot.nome} não possui telefone cadastrado.`, "warning", () => { }, () => { });
@@ -1413,6 +1533,90 @@ export default function Admin() {
         </div>
       )}
 
+      {vtrUsoManualModal && (
+        <div className="modal-overlay" onClick={() => !salvandoUsoManual && setVtrUsoManualModal(null)} style={{ zIndex: 1500 }}>
+          <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: '620px', borderTopColor: 'var(--bm-gold)', textAlign: 'left' }}>
+            <div style={{ textAlign: 'center' }}>
+              <div className="modal-confirm-icon"><BookOpen size={48} color="var(--bm-gold)" /></div>
+              <h3>Lançar Uso Físico - VTR {vtrUsoManualModal.prefixo}</h3>
+              <p className="text-muted" style={{ fontSize: '0.85rem', marginTop: '0.5rem' }}>
+                Use este lançamento para registrar no sistema um serviço já preenchido manualmente no diário de bordo físico.
+              </p>
+            </div>
+
+            {vtrUsoManualModal.status === 'em_servico' && (
+              <div style={{ marginTop: '1rem', padding: '0.75rem', borderRadius: '8px', backgroundColor: 'var(--badge-alert-bg)', color: 'var(--badge-alert-text)', fontSize: '0.85rem', fontWeight: 600 }}>
+                Esta VTR está em serviço. Encerre o turno ativo antes de lançar uso físico retroativo.
+              </div>
+            )}
+
+            <div className="responsive-grid" style={{ gap: '1rem', marginTop: '1.5rem' }}>
+              <div className="form-group">
+                <label className="form-label">Data Inicial <span style={{ color: 'red' }}>*</span></label>
+                <input type="date" className="form-input" value={usoManualForm.dataInicio} onChange={e => atualizarUsoManual('dataInicio', e.target.value)} disabled={salvandoUsoManual} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Hora Inicial <span style={{ color: 'red' }}>*</span></label>
+                <input type="time" className="form-input" value={usoManualForm.horaInicio} onChange={e => atualizarUsoManual('horaInicio', e.target.value)} disabled={salvandoUsoManual} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Data Final <span style={{ color: 'red' }}>*</span></label>
+                <input type="date" className="form-input" value={usoManualForm.dataFim} onChange={e => atualizarUsoManual('dataFim', e.target.value)} disabled={salvandoUsoManual} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Hora Final <span style={{ color: 'red' }}>*</span></label>
+                <input type="time" className="form-input" value={usoManualForm.horaFim} onChange={e => atualizarUsoManual('horaFim', e.target.value)} disabled={salvandoUsoManual} />
+              </div>
+            </div>
+
+            <div className="responsive-grid" style={{ gap: '1rem' }}>
+              <div className="form-group">
+                <label className="form-label">Motorista <span style={{ color: 'red' }}>*</span></label>
+                <input type="text" className="form-input" placeholder="Ex: Sd Silva" value={usoManualForm.motorista} onChange={e => atualizarUsoManual('motorista', e.target.value)} disabled={salvandoUsoManual} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Matrícula <span style={{ color: 'red' }}>*</span></label>
+                <input type="text" className="form-input" maxLength={7} placeholder="0000000" value={usoManualForm.matricula} onChange={e => atualizarUsoManual('matricula', e.target.value.replace(/\D/g, ''))} disabled={salvandoUsoManual} style={{ letterSpacing: '4px', fontWeight: 700, textAlign: 'center' }} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Patrulheiro(s)</label>
+                <input type="text" className="form-input" placeholder="Opcional" value={usoManualForm.patrulheiro} onChange={e => atualizarUsoManual('patrulheiro', e.target.value)} disabled={salvandoUsoManual} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Finalidade</label>
+                <select className="form-input" value={usoManualForm.finalidade} onChange={e => atualizarUsoManual('finalidade', e.target.value)} disabled={salvandoUsoManual}>
+                  <option value="Patrulhamento Ostensivo">Patrulhamento Ostensivo</option>
+                  <option value="Apoio">Apoio</option>
+                  <option value="Deslocamento Administrativo">Deslocamento Administrativo</option>
+                  <option value="Operação Específica">Operação Específica</option>
+                  <option value="Outros">Outros</option>
+                </select>
+              </div>
+              <div className="form-group">
+                <label className="form-label">KM Inicial <span style={{ color: 'red' }}>*</span></label>
+                <input type="number" className="form-input" value={usoManualForm.kmInicial} onChange={e => atualizarUsoManual('kmInicial', e.target.value)} disabled={salvandoUsoManual} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">KM Final <span style={{ color: 'red' }}>*</span></label>
+                <input type="number" className="form-input" value={usoManualForm.kmFinal} onChange={e => atualizarUsoManual('kmFinal', e.target.value)} disabled={salvandoUsoManual} />
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Observação do P4</label>
+              <textarea className="form-input" rows="3" placeholder="Ex: Lançamento conforme diário físico da guarnição..." value={usoManualForm.observacao} onChange={e => atualizarUsoManual('observacao', e.target.value)} disabled={salvandoUsoManual} />
+            </div>
+
+            <div className="modal-confirm-buttons" style={{ marginTop: '1.5rem' }}>
+              <button className="btn btn-secondary" onClick={() => setVtrUsoManualModal(null)} disabled={salvandoUsoManual}>Cancelar</button>
+              <button className="btn btn-primary" onClick={confirmarUsoManual} disabled={salvandoUsoManual || vtrUsoManualModal.status === 'em_servico'}>
+                {salvandoUsoManual ? 'Salvando...' : 'Lançar no Histórico'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {vtrSelecionadaQR && (
         <div className="modal-overlay" onClick={() => setVtrSelecionadaQR(null)}>
           <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: '450px' }}>
@@ -1889,6 +2093,7 @@ export default function Admin() {
                       <td>
                         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                           <button className="btn-icon" onClick={() => carregarHistorico(vtr.prefixo)} title="Histórico/Gráfico"><TrendingUp size={16} color="var(--bm-green)" /></button>
+                          <button className="btn-icon" onClick={() => abrirUsoManual(vtr)} title="Lançar Uso do Diário Físico"><BookOpen size={16} color="var(--bm-gold)" /></button>
                           <button className="btn-icon" onClick={() => abrirEdicao(vtr)} title="Editar"><Edit size={16} /></button>
                           <button className="btn-icon" onClick={() => abrirQR(vtr)} title="QR Code"><QrCode size={16} /></button>
                           <button className="btn-icon" onClick={() => alternarStatusBaixada(vtr)} title={vtr.status === 'baixada' ? "Liberar" : "Baixar"}>{vtr.status === 'baixada' ? <CheckCircle2 size={16} color="#10b981" /> : <ShieldAlert size={16} color="#ef4444" />}</button>

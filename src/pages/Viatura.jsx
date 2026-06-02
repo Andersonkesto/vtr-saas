@@ -1133,8 +1133,8 @@ export default function Viatura() {
                 />
               </div>
               <div className="form-group">
-                <label className="form-label">Patrulheiro(s)</label>
-                <input type="text" className="form-input" required value={patrulheiro} onChange={(e) => setPatrulheiro(e.target.value)} placeholder="Ex: Sd Oliveira" />
+                <label className="form-label">Patrulheiro(s) (Opcional)</label>
+                <input type="text" className="form-input" value={patrulheiro} onChange={(e) => setPatrulheiro(e.target.value)} placeholder="Ex: Sd Oliveira (ou deixe em branco)" />
               </div>
               <div className="form-group">
                 <label className="form-label">KM Inicial</label>
