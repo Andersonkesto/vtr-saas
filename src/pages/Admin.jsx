@@ -105,6 +105,7 @@ export default function Admin() {
   const [loadingContent, setLoadingContent] = useState(false);
   const [manutencoesVtr, setManutencoesVtr] = useState([]);
   const [expandirTiposManutencao, setExpandirTiposManutencao] = useState(false);
+  const [categoriaManutencaoAberta, setCategoriaManutencaoAberta] = useState(null);
 
   // Nomes para assinaturas editáveis no Relatório Executivo
   const [nomeAuxP4, setNomeAuxP4] = useState('');
@@ -487,14 +488,14 @@ export default function Admin() {
   const abrirPerfilViatura = async (vtr) => {
     let dadosExtras = { ...vtr };
     if (vtr.status === 'em_servico' && vtr.servico_atual_id) {
-       try {
-         const servSnap = await getDoc(doc(db, 'servicos', vtr.servico_atual_id));
-         if (servSnap.exists()) {
-           const servData = servSnap.data();
-           dadosExtras.motorista_atual = servData.motorista;
-           dadosExtras.patrulheiro_atual = servData.patrulheiro;
-         }
-       } catch (e) { console.error(e); }
+      try {
+        const servSnap = await getDoc(doc(db, 'servicos', vtr.servico_atual_id));
+        if (servSnap.exists()) {
+          const servData = servSnap.data();
+          dadosExtras.motorista_atual = servData.motorista;
+          dadosExtras.patrulheiro_atual = servData.patrulheiro;
+        }
+      } catch (e) { console.error(e); }
     }
     setVtrPerfilModal(dadosExtras);
   };
@@ -504,6 +505,7 @@ export default function Admin() {
     setFiltroVtr(prefixo);
     setLoadingContent(true);
     setExpandirTiposManutencao(false);
+    setCategoriaManutencaoAberta(null);
     try {
       let qHist;
       if (prefixo) qHist = query(collection(db, 'servicos'), where('prefixo_vtr', '==', prefixo), limit(100));
@@ -1899,7 +1901,7 @@ export default function Admin() {
 
       {vtrPerfilModal && (
         <div className="modal-overlay" onClick={() => setVtrPerfilModal(null)}>
-          <div className="modal-content fade-in" onClick={e => e.stopPropagation()} style={{ maxWidth: '450px', borderTop: '5px solid var(--bm-green)' }}>
+          <div className="modal-content fade-in" onClick={e => e.stopPropagation()} style={{ maxWidth: '620px', borderTop: '5px solid var(--bm-green)' }}>
             <div className="flex-between" style={{ marginBottom: '1.5rem' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                 <div style={{ backgroundColor: 'var(--bm-green)', color: 'white', padding: '10px', borderRadius: '12px' }}><Car size={24} /></div>
@@ -1937,20 +1939,35 @@ export default function Admin() {
                   <div style={{ gridColumn: '1 / -1', backgroundColor: 'var(--badge-inservice-bg)', padding: '10px', borderRadius: '8px', border: '1px solid var(--badge-inservice-text)' }}>
                     <label style={{ fontSize: '0.7rem', color: 'var(--badge-inservice-text)', fontWeight: 700, display: 'block', textTransform: 'uppercase', marginBottom: '4px' }}>Guarnição Atual (Em Serviço)</label>
                     <strong style={{ fontSize: '1.1rem', color: 'var(--badge-inservice-text)', display: 'block' }}>
-                       Motorista: {vtrPerfilModal.motorista_atual || vtrPerfilModal.matricula_ativa}
+                      Motorista: {vtrPerfilModal.motorista_atual || vtrPerfilModal.matricula_ativa}
                     </strong>
                     {vtrPerfilModal.patrulheiro_atual && (
-                       <strong style={{ fontSize: '0.9rem', color: 'var(--badge-inservice-text)', display: 'block', marginTop: '4px' }}>
-                          Patrulheiro(s): {vtrPerfilModal.patrulheiro_atual}
-                       </strong>
+                      <strong style={{ fontSize: '0.9rem', color: 'var(--badge-inservice-text)', display: 'block', marginTop: '4px' }}>
+                        Patrulheiro(s): {vtrPerfilModal.patrulheiro_atual}
+                      </strong>
                     )}
                   </div>
                 )}
               </div>
 
-              <div style={{ marginTop: '2rem', display: 'flex', flexWrap: 'wrap', gap: '0.75rem' }}>
-                <button className="btn btn-secondary" onClick={() => { setVtrPerfilModal(null); abrirEdicao(vtrPerfilModal); }} style={{ flex: '1 1 140px' }}><Edit size={18} /> Editar</button>
-                <button className="btn btn-primary" onClick={() => { setVtrPerfilModal(null); carregarHistorico(vtrPerfilModal.prefixo); }} style={{ flex: '1 1 140px' }}><History size={18} /> Histórico</button>
+              <div style={{ marginTop: '2rem', borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
+                <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, display: 'block', textTransform: 'uppercase', marginBottom: '0.75rem' }}>Ações</label>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '0.75rem' }}>
+                  <button className="btn btn-primary" onClick={() => { setVtrPerfilModal(null); carregarHistorico(vtrPerfilModal.prefixo); }}><TrendingUp size={18} /> Histórico</button>
+                  <button className="btn btn-secondary" onClick={() => { setVtrPerfilModal(null); abrirUsoManual(vtrPerfilModal); }}><BookOpen size={18} /> Registrar Uso</button>
+                  <button className="btn btn-secondary" onClick={() => { setVtrPerfilModal(null); abrirEdicao(vtrPerfilModal); }}><Edit size={18} /> Editar</button>
+                  <button className="btn btn-secondary" onClick={() => { setVtrPerfilModal(null); abrirQR(vtrPerfilModal); }}><QrCode size={18} /> QR Code</button>
+                  <button className={`btn ${vtrPerfilModal.status === 'baixada' ? 'btn-primary' : 'btn-danger'}`} onClick={() => { setVtrPerfilModal(null); alternarStatusBaixada(vtrPerfilModal); }}>
+                    {vtrPerfilModal.status === 'baixada' ? <CheckCircle2 size={18} /> : <ShieldAlert size={18} />}
+                    {vtrPerfilModal.status === 'baixada' ? 'Liberar' : 'Baixar'}
+                  </button>
+                  {vtrPerfilModal.status === 'em_servico' && (
+                    <button className="btn" onClick={() => { setVtrPerfilModal(null); abrirFimForcado(vtrPerfilModal); }} style={{ backgroundColor: '#eab308', color: 'white' }}>
+                      <X size={18} /> Forçar Fim
+                    </button>
+                  )}
+                  <button className="btn btn-danger" onClick={() => { setVtrPerfilModal(null); excluirViatura(vtrPerfilModal.id); }}><Trash2 size={18} /> Excluir</button>
+                </div>
               </div>
             </div>
           </div>
@@ -2058,7 +2075,7 @@ export default function Admin() {
           </div>
 
           <div className="responsive-grid">
-            <div className="card table-wrapper" style={{ gridColumn: 'span 2' }}>
+            <div className="card" style={{ gridColumn: 'span 2' }}>
               <div className="flex-between" style={{ marginBottom: '1rem', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                   <h3 style={{ margin: 0 }}>Frota Atual</h3>
@@ -2071,42 +2088,36 @@ export default function Admin() {
                   <button type="submit" className="btn btn-primary" style={{ height: '34px', padding: '0 12px' }}><PlusCircle size={20} /></button>
                 </form>
               </div>
-              <table className="table">
-                <thead><tr><th>Prefixo</th><th>Status</th><th className="hide-mobile">KM</th><th className="hide-mobile">Óleo</th><th className="hide-mobile">Revisão</th><th>Ações</th></tr></thead>
-                <tbody>{viaturas.map(vtr => {
+              <div className="fleet-card-grid">
+                {viaturas.map(vtr => {
                   const statusOleo = getStatusOleo(vtr);
                   const statusRevisao = getStatusRevisao(vtr);
-                  let rowClass = vtr.status === 'baixada' ? 'row-status-alert' : vtr.status === 'em_servico' ? 'row-status-inservice' : 'row-status-available';
+                  const cardStatusClass = vtr.status === 'baixada' ? 'fleet-card-down' : vtr.status === 'em_servico' ? 'fleet-card-active' : 'fleet-card-standby';
+                  const statusLabel = vtr.status === 'em_servico' ? 'Em uso' : vtr.status === 'baixada' ? 'Baixada' : 'Fora de serviço';
                   return (
-                    <tr key={vtr.id} className={rowClass}>
-                      <td><strong className="link-prefix" onClick={() => abrirPerfilViatura(vtr)} style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', whiteSpace: 'nowrap' }}><Car size={18} style={{ flexShrink: 0 }} /> {vtr.prefixo}</strong></td>
-                      <td><span className={`badge ${vtr.status === 'disponivel' ? 'badge-available' : vtr.status === 'em_servico' ? 'badge-inservice' : 'badge-alert'}`}>{vtr.status}</span></td>
-                      <td className="hide-mobile">{vtr.km_atual}</td>
-                      <td className="hide-mobile"><span className={statusOleo.class}>{statusOleo.label}</span></td>
-                      <td className="hide-mobile">
-                        {statusRevisao ? (
-                          <span className={statusRevisao.class}>{statusRevisao.label}</span>
-                        ) : (
-                          <span className="text-muted" style={{ opacity: 0.5 }}>---</span>
-                        )}
-                      </td>
-                      <td>
-                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                          <button className="btn-icon" onClick={() => carregarHistorico(vtr.prefixo)} title="Histórico/Gráfico"><TrendingUp size={16} color="var(--bm-green)" /></button>
-                          <button className="btn-icon" onClick={() => abrirUsoManual(vtr)} title="Lançar Uso do Diário Físico"><BookOpen size={16} color="var(--bm-gold)" /></button>
-                          <button className="btn-icon" onClick={() => abrirEdicao(vtr)} title="Editar"><Edit size={16} /></button>
-                          <button className="btn-icon" onClick={() => abrirQR(vtr)} title="QR Code"><QrCode size={16} /></button>
-                          <button className="btn-icon" onClick={() => alternarStatusBaixada(vtr)} title={vtr.status === 'baixada' ? "Liberar" : "Baixar"}>{vtr.status === 'baixada' ? <CheckCircle2 size={16} color="#10b981" /> : <ShieldAlert size={16} color="#ef4444" />}</button>
-                          {vtr.status === 'em_servico' && (
-                            <button className="btn-icon" onClick={() => abrirFimForcado(vtr)} title="Forçar Encerramento de Turno" style={{ color: '#eab308' }}><X size={16} /></button>
-                          )}
-                          <button className="btn-icon" onClick={() => excluirViatura(vtr.id)} title="Excluir"><Trash2 size={16} /></button>
-                        </div>
-                      </td>
-                    </tr>
+                    <button
+                      key={vtr.id}
+                      type="button"
+                      className={`fleet-card ${cardStatusClass}`}
+                      onClick={() => abrirPerfilViatura(vtr)}
+                      title={`Abrir detalhes da VTR ${vtr.prefixo}`}
+                    >
+                      <div className="fleet-card-top">
+                        <div className="fleet-card-icon"><Car size={22} /></div>
+                        <span className={`badge ${vtr.status === 'disponivel' ? 'badge-available' : vtr.status === 'em_servico' ? 'badge-inservice' : 'badge-alert'}`}>
+                          {statusLabel}
+                        </span>
+                      </div>
+                      <strong className="fleet-card-prefix">VTR {vtr.prefixo}</strong>
+                      <div className="fleet-card-meta">
+                        <span>{vtr.km_atual || 0} km</span>
+                        <span className={statusOleo.class}>{statusOleo.label}</span>
+                        <span className={statusRevisao?.class || ''}>{statusRevisao ? statusRevisao.label : 'Revisão ---'}</span>
+                      </div>
+                    </button>
                   )
-                })}</tbody>
-              </table>
+                })}
+              </div>
             </div>
             <div className="card">
               <h3>Visão Geral</h3>
@@ -2632,9 +2643,15 @@ export default function Admin() {
           'Outros': 0
         };
 
+        const manutencoesPorTipo = Object.keys(contagemTipos).reduce((acc, tipo) => {
+          acc[tipo] = [];
+          return acc;
+        }, {});
+
         manutencoesVtr.forEach(m => {
           const cat = categorizarManutencao(m);
           contagemTipos[cat] = (contagemTipos[cat] || 0) + 1;
+          manutencoesPorTipo[cat] = [...(manutencoesPorTipo[cat] || []), m];
         });
 
         const totalDefeitos = manutencoesVtr.length;
@@ -2649,8 +2666,8 @@ export default function Admin() {
                 <p className="text-muted">Lista de turnos, quilometragem e registros operacionais</p>
               </div>
               {filtroVtr && (
-                <button 
-                  className="btn btn-secondary" 
+                <button
+                  className="btn btn-secondary"
                   onClick={() => carregarHistorico()}
                   style={{ width: 'auto', display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 16px', fontSize: '0.9rem' }}
                 >
@@ -2662,7 +2679,7 @@ export default function Admin() {
             {filtroVtr && (
               <div style={{ marginBottom: '2rem' }}>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.25rem', marginBottom: '1.25rem' }}>
-                  
+
                   {/* KPI Média de KM */}
                   <div className="stat-card" style={{ borderTop: '4px solid var(--bm-green)', padding: '1.25rem', height: '100%' }}>
                     <div className="stat-icon" style={{ backgroundColor: 'rgba(16, 185, 129, 0.1)', color: 'var(--status-available)' }}>
@@ -2676,12 +2693,12 @@ export default function Admin() {
                   </div>
 
                   {/* KPI Defeitos */}
-                  <div 
-                    className="stat-card" 
+                  <div
+                    className="stat-card"
                     onClick={() => setExpandirTiposManutencao(!expandirTiposManutencao)}
-                    style={{ 
-                      borderTop: '4px solid var(--status-alteration)', 
-                      padding: '1.25rem', 
+                    style={{
+                      borderTop: '4px solid var(--status-alteration)',
+                      padding: '1.25rem',
                       cursor: 'pointer',
                       transition: 'all 0.2s ease',
                       border: expandirTiposManutencao ? '1px solid var(--status-alteration)' : '1px solid var(--border-color)',
@@ -2718,8 +2735,23 @@ export default function Admin() {
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                         {Object.entries(contagemTipos).map(([tipo, qtd]) => {
                           const percentual = totalDefeitos > 0 ? ((qtd / totalDefeitos) * 100).toFixed(0) : 0;
+                          const registrosTipo = manutencoesPorTipo[tipo] || [];
+                          const categoriaAberta = categoriaManutencaoAberta === tipo;
                           return (
-                            <div key={tipo}>
+                            <div
+                              key={tipo}
+                              onClick={() => qtd > 0 && setCategoriaManutencaoAberta(categoriaAberta ? null : tipo)}
+                              title={qtd > 0 ? 'Clique para ver os detalhes desta categoria' : 'Sem registros nesta categoria'}
+                              style={{
+                                cursor: qtd > 0 ? 'pointer' : 'default',
+                                opacity: qtd > 0 ? 1 : 0.65,
+                                padding: '0.65rem',
+                                borderRadius: '8px',
+                                border: categoriaAberta ? '1px solid var(--bm-gold)' : '1px solid transparent',
+                                backgroundColor: categoriaAberta ? 'var(--hover-bg)' : 'transparent',
+                                transition: 'all 0.2s ease'
+                              }}
+                            >
                               <div className="flex-between" style={{ marginBottom: '6px', fontSize: '0.85rem' }}>
                                 <span style={{ fontWeight: 600 }}>{tipo}</span>
                                 <span className="badge badge-secondary" style={{ display: 'inline-flex', gap: '6px', fontWeight: 'bold' }}>
@@ -2727,16 +2759,50 @@ export default function Admin() {
                                 </span>
                               </div>
                               <div style={{ height: '8px', background: 'var(--hover-bg)', borderRadius: '4px', overflow: 'hidden' }}>
-                                <div 
-                                  style={{ 
-                                    width: `${percentual}%`, 
-                                    height: '100%', 
-                                    background: tipo === 'Motor / Óleo' ? 'var(--bm-gold)' : tipo === 'Elétrica' ? '#3b82f6' : tipo === 'Freios' ? 'var(--status-alteration)' : tipo === 'Suspensão / Pneus' ? '#10b981' : '#6b7280', 
+                                <div
+                                  style={{
+                                    width: `${percentual}%`,
+                                    height: '100%',
+                                    background: tipo === 'Motor / Óleo' ? 'var(--bm-gold)' : tipo === 'Elétrica' ? '#3b82f6' : tipo === 'Freios' ? 'var(--status-alteration)' : tipo === 'Suspensão / Pneus' ? '#10b981' : '#6b7280',
                                     borderRadius: '4px',
                                     transition: 'width 0.8s ease'
                                   }}
                                 ></div>
                               </div>
+                              {categoriaAberta && (
+                                <div style={{ marginTop: '0.85rem', display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+                                  {registrosTipo.map(m => (
+                                    <button
+                                      key={m.id}
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setManutencaoSelecionada(m);
+                                      }}
+                                      className="btn btn-secondary"
+                                      style={{
+                                        height: 'auto',
+                                        minHeight: 'auto',
+                                        width: '100%',
+                                        justifyContent: 'space-between',
+                                        alignItems: 'flex-start',
+                                        padding: '0.75rem',
+                                        textAlign: 'left',
+                                        backgroundColor: 'var(--card-bg)',
+                                        border: '1px solid var(--border-color)'
+                                      }}
+                                    >
+                                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', minWidth: 0 }}>
+                                        <strong style={{ color: 'var(--text-main)', fontSize: '0.85rem' }}>{m.descricao || 'Sem descrição'}</strong>
+                                        <span className="text-muted" style={{ fontSize: '0.72rem' }}>
+                                          {formatarData(m.data_relato)} por {m.relatado_por || 'N/A'}{m.origem ? ` (${m.origem})` : ''}
+                                        </span>
+                                      </div>
+                                      <Eye size={16} style={{ flexShrink: 0, marginTop: '2px', color: 'var(--bm-green)' }} />
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
                             </div>
                           );
                         })}

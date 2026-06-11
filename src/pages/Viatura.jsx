@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { doc, getDoc, updateDoc, addDoc, collection, serverTimestamp, query, orderBy, onSnapshot, setDoc } from 'firebase/firestore';
+import { doc, getDoc, getDocs, updateDoc, addDoc, collection, serverTimestamp, query, where, orderBy, onSnapshot, setDoc } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '../firebase';
 import { ShieldAlert, CheckCircle, Car, AlertCircle, ClipboardCheck, MapPin, Camera, List, ChevronRight, AlertTriangle, Info, CheckCircle2, User, LogOut, UserPlus, Download, X } from 'lucide-react';
@@ -59,6 +59,7 @@ export default function Viatura() {
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const loggedRef = useRef(false);
+  const [ultimoRelatoAlteracao, setUltimoRelatoAlteracao] = useState(null);
 
   // Estado para Modal de Alerta Customizado
   const [modalAlert, setModalAlert] = useState({ open: false, title: '', message: '', type: 'info', onConfirm: null });
@@ -158,6 +159,26 @@ export default function Viatura() {
     setMeUser(null);
     localStorage.removeItem('vtr_me_user');
     navigate('/vtr');
+  };
+
+  const finalizarSessaoAposOperacao = () => {
+    setMeUser(null);
+    localStorage.removeItem('vtr_me_user');
+    navigate('/vtr');
+  };
+
+  const getTimestampMillis = (value) => {
+    if (!value) return 0;
+    if (typeof value.toDate === 'function') return value.toDate().getTime();
+    if (value.seconds) return value.seconds * 1000;
+    if (value._seconds) return value._seconds * 1000;
+    return 0;
+  };
+
+  const formatarDataHora = (value) => {
+    const millis = getTimestampMillis(value);
+    if (!millis) return 'Data não informada';
+    return new Date(millis).toLocaleString('pt-BR');
   };
 
   useEffect(() => {
@@ -537,6 +558,7 @@ export default function Viatura() {
     setLoading(true);
     setViatura(null);
     setError('');
+    setUltimoRelatoAlteracao(null);
 
     if (!prefixo) {
       // Se não tem prefixo, carrega a lista
@@ -577,6 +599,28 @@ export default function Viatura() {
       };
       fetchViatura();
     }
+  }, [prefixo]);
+
+  useEffect(() => {
+    if (!prefixo) return;
+
+    const carregarUltimoRelatoAlteracao = async () => {
+      try {
+        const q = query(collection(db, 'manutencoes'), where('prefixo_vtr', '==', prefixo));
+        const snapshot = await getDocs(q);
+        const relatos = snapshot.docs
+          .map(docSnap => ({ id: docSnap.id, ...docSnap.data() }))
+          .filter(relato => typeof relato.descricao === 'string' && relato.descricao.trim())
+          .sort((a, b) => getTimestampMillis(b.data_relato) - getTimestampMillis(a.data_relato));
+
+        setUltimoRelatoAlteracao(relatos[0] || null);
+      } catch (err) {
+        console.warn("Erro ao carregar último relato de alteração:", err);
+        setUltimoRelatoAlteracao(null);
+      }
+    };
+
+    carregarUltimoRelatoAlteracao();
   }, [prefixo]);
 
   useEffect(() => {
@@ -688,7 +732,7 @@ export default function Viatura() {
       }
 
       showAlert("Sucesso!", "Turno iniciado com sucesso. Bom serviço!", "success", () => {
-        window.location.reload();
+        finalizarSessaoAposOperacao();
       });
     } catch (err) {
       console.error(err);
@@ -810,7 +854,7 @@ export default function Viatura() {
       }
 
       showAlert("Finalizado!", "Turno encerrado com sucesso. Bom descanso!", "success", () => {
-        window.location.reload();
+        finalizarSessaoAposOperacao();
       });
     } catch (err) {
       console.error(err);
@@ -1152,6 +1196,31 @@ export default function Viatura() {
                 </select>
               </div>
             </div>
+
+            {ultimoRelatoAlteracao && (
+              <div style={{
+                backgroundColor: 'rgba(245, 158, 11, 0.12)',
+                border: '1px solid rgba(245, 158, 11, 0.45)',
+                borderRadius: '8px',
+                padding: '1rem',
+                marginBottom: '1rem'
+              }}>
+                <h4 style={{ color: 'var(--status-warning)', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <AlertTriangle size={20} /> Último relato de alteração
+                </h4>
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
+                  Verifique se a alteração abaixo já corresponde ao problema encontrado antes de registrar uma nova ocorrência.
+                </p>
+                <div style={{ fontSize: '0.92rem', lineHeight: 1.45, whiteSpace: 'pre-wrap' }}>
+                  {ultimoRelatoAlteracao.descricao}
+                </div>
+                <div style={{ marginTop: '0.75rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  Relatado por {ultimoRelatoAlteracao.relatado_por || 'motorista não identificado'}
+                  {ultimoRelatoAlteracao.origem ? ` (${ultimoRelatoAlteracao.origem})` : ''}
+                  {' '}em {formatarDataHora(ultimoRelatoAlteracao.data_relato)}
+                </div>
+              </div>
+            )}
 
             <div className={`${tentouSubmeter && !realizouGalope ? 'shake' : ''}`} style={{
               backgroundColor: tentouSubmeter && !realizouGalope ? 'rgba(239, 68, 68, 0.1)' : 'var(--badge-inservice-bg)',
