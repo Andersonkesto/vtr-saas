@@ -2089,7 +2089,12 @@ export default function Admin() {
                 </form>
               </div>
               <div className="fleet-card-grid">
-                {viaturas.map(vtr => {
+                {[...viaturas]
+                  .sort((a, b) => {
+                    const prioridadeStatus = { em_servico: 0, disponivel: 1, baixada: 2 };
+                    return (prioridadeStatus[a.status] ?? 3) - (prioridadeStatus[b.status] ?? 3) || String(a.prefixo).localeCompare(String(b.prefixo), 'pt-BR', { numeric: true });
+                  })
+                  .map(vtr => {
                   const statusOleo = getStatusOleo(vtr);
                   const statusRevisao = getStatusRevisao(vtr);
                   const cardStatusClass = vtr.status === 'baixada' ? 'fleet-card-down' : vtr.status === 'em_servico' ? 'fleet-card-active' : 'fleet-card-standby';
