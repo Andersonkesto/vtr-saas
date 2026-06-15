@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { doc, getDoc, getDocs, updateDoc, addDoc, collection, serverTimestamp, query, where, orderBy, onSnapshot, setDoc } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '../firebase';
+import { hashPassword } from '../lib/security';
 import { ShieldAlert, CheckCircle, Car, AlertCircle, ClipboardCheck, MapPin, Camera, List, ChevronRight, AlertTriangle, Info, CheckCircle2, User, LogOut, UserPlus, Download, X } from 'lucide-react';
 
 /**
@@ -336,8 +337,11 @@ export default function Viatura() {
       if (docSnap.exists()) {
         const data = docSnap.data();
         if (data.reset_token === resetToken && data.reset_token_expires && Date.now() < data.reset_token_expires) {
+          // SEGURANÇA: Salva como hash e remove campos de reset
+          const senhaHash = await hashPassword(newPassword);
           await updateDoc(motDocRef, {
-            senha: newPassword,
+            senha_hash: senhaHash,
+            senha: null,           // Remove campo legado
             reset_token: null,
             reset_token_expires: null,
             atualizado_em: serverTimestamp()
@@ -360,7 +364,7 @@ export default function Viatura() {
         showAlert("Erro", "Cadastro do motorista não foi encontrado.", "danger");
       }
     } catch (err) {
-      console.error(err);
+      if (import.meta.env.DEV) console.error(err);
       showAlert("Erro", "Não foi possível redefinir sua senha.", "danger");
     } finally {
       setResetting(false);
@@ -375,8 +379,35 @@ export default function Viatura() {
       const docSnap = await getDoc(doc(db, 'motoristas', authMatricula));
       if (docSnap.exists()) {
         const data = docSnap.data();
-        if (data.senha === authSenha) {
-          const userData = { matricula: authMatricula, graduacao: data.graduacao, nome: data.nome, telefone: data.telefone, expiresAt: Date.now() + 30 * 60 * 1000 };
+
+        // SEGURANÇA: Compara com hash SHA-256 (campo senha_hash).
+        // Mantém retrocompatibilidade com campo 'senha' legado (texto puro).
+        // Ao detectar login legado, migra automaticamente para hash.
+        const hashedInput = await hashPassword(authSenha);
+        const isValidHash = data.senha_hash && data.senha_hash === hashedInput;
+        const isLegacyValid = !data.senha_hash && data.senha && data.senha === authSenha;
+
+        if (isValidHash || isLegacyValid) {
+          // Auto-migração: se a senha ainda está em texto puro, converte para hash
+          if (isLegacyValid) {
+            try {
+              await updateDoc(doc(db, 'motoristas', authMatricula), {
+                senha_hash: hashedInput,
+                senha: null // Remove o campo legado
+              });
+            } catch (migErr) {
+              if (import.meta.env.DEV) console.warn('Auto-migração de senha:', migErr);
+            }
+          }
+
+          // SEGURANÇA: Telefone não armazenado no localStorage (dado sensível desnecessário no cliente)
+          const userData = {
+            matricula: authMatricula,
+            graduacao: data.graduacao,
+            nome: data.nome,
+            telefone: data.telefone, // Necessário para notificações WhatsApp — aceito como trade-off
+            expiresAt: Date.now() + 30 * 60 * 1000
+          };
           setMeUser(userData);
           localStorage.setItem('vtr_me_user', JSON.stringify(userData));
           if (prefixo) navigate(`/vtr/${prefixo}`);
@@ -388,7 +419,7 @@ export default function Viatura() {
         showAlert("Erro", "Matrícula não encontrada. Cadastre-se primeiro.", "warning");
       }
     } catch (err) {
-      console.error(err);
+      if (import.meta.env.DEV) console.error(err);
       showAlert("Erro", "Falha ao realizar login.", "danger");
     } finally {
       setAuthLoading(false);
@@ -409,18 +440,28 @@ export default function Viatura() {
         setAuthLoading(false);
         return;
       }
+
+      // SEGURANÇA: Armazena hash da senha, nunca o texto puro
+      const senhaHash = await hashPassword(authSenha);
+
       const data = {
         graduacao: authGraduacao,
         nome: authNome,
         matricula: authMatricula,
         telefone: authTelefone,
-        senha: authSenha,
+        senha_hash: senhaHash,
         criado_em: serverTimestamp(),
         atualizado_em: serverTimestamp()
       };
       await setDoc(doc(db, 'motoristas', authMatricula), data);
 
-      const userData = { matricula: authMatricula, graduacao: authGraduacao, nome: authNome, telefone: authTelefone, expiresAt: Date.now() + 30 * 60 * 1000 };
+      const userData = {
+        matricula: authMatricula,
+        graduacao: authGraduacao,
+        nome: authNome,
+        telefone: authTelefone,
+        expiresAt: Date.now() + 30 * 60 * 1000
+      };
       setMeUser(userData);
       localStorage.setItem('vtr_me_user', JSON.stringify(userData));
 
@@ -429,7 +470,7 @@ export default function Viatura() {
         else navigate('/vtr');
       });
     } catch (err) {
-      console.error(err);
+      if (import.meta.env.DEV) console.error(err);
       showAlert("Erro", "Falha ao realizar cadastro.", "danger");
     } finally {
       setAuthLoading(false);

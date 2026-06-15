@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { collection, onSnapshot, doc, setDoc, query, orderBy, limit, getDocs, getDoc, where, deleteDoc, updateDoc, addDoc, serverTimestamp, Timestamp } from 'firebase/firestore';
 import { db, auth } from '../firebase';
+import { hashPassword } from '../lib/security';
 import { PlusCircle, History, Car, AlertTriangle, QrCode, X, Edit, Settings, Trash2, Filter, Eye, Monitor, Smartphone, Activity, ClipboardCheck, Wrench, CheckCircle2, BarChart3, TrendingUp, ShieldCheck, MapPin, Download, ImageIcon, Maximize2, AlertCircle, ShieldAlert, Info, Gauge, Zap, Users, BookOpen } from 'lucide-react';
 import { QRCodeSVG, QRCodeCanvas } from 'qrcode.react';
 import { PieChart, Pie, Cell, Tooltip as RechartsTooltip, ResponsiveContainer, Legend, BarChart, Bar, XAxis, YAxis, CartesianGrid, LineChart, Line, AreaChart, Area } from 'recharts';
@@ -568,7 +569,9 @@ export default function Admin() {
       setEditMotNome(mot.nome || '');
       setEditMotMatricula(mot.matricula || mot.id || '');
       setEditMotTelefone(mot.telefone || '');
-      setEditMotSenha(mot.senha || '');
+      // SEGURANÇA: Nunca pré-preencher o campo de senha com o hash salvo.
+      // Se o admin deixar em branco ao editar, a senha existente é mantida.
+      setEditMotSenha('');
     } else {
       setMotoristaParaEditar({ id: 'NEW' });
       setEditMotGraduacao('Sd');
@@ -596,9 +599,15 @@ export default function Admin() {
         nome: editMotNome.trim(),
         matricula: matriculaId,
         telefone: editMotTelefone.trim(),
-        senha: editMotSenha.trim(),
         atualizado_em: serverTimestamp()
       };
+
+      // SEGURANÇA: Apenas atualiza a senha se o admin digitou uma nova.
+      // A senha é armazenada como hash SHA-256 — nunca em texto puro.
+      if (editMotSenha.trim()) {
+        dados.senha_hash = await hashPassword(editMotSenha.trim());
+        dados.senha = null; // Remove campo legado de texto puro, se existir
+      }
 
       if (motoristaParaEditar.id === 'NEW') {
         dados.criado_em = serverTimestamp();
@@ -1790,8 +1799,17 @@ export default function Admin() {
                   <input type="text" className="form-input" value={editMotTelefone} onChange={e => setEditMotTelefone(e.target.value)} required placeholder="(53) 99999-9999" disabled={salvandoMotorista} />
                 </div>
                 <div className="form-group" style={{ gridColumn: '1 / -1' }}>
-                  <label className="form-label">Senha</label>
-                  <input type="text" className="form-input" value={editMotSenha} onChange={e => setEditMotSenha(e.target.value)} required placeholder="Defina uma senha" disabled={salvandoMotorista} />
+                  <label className="form-label">Senha {motoristaParaEditar?.id !== 'NEW' && <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontSize: '0.8em' }}>(deixe em branco para manter a atual)</span>}</label>
+                  <input
+                    type="password"
+                    className="form-input"
+                    value={editMotSenha}
+                    onChange={e => setEditMotSenha(e.target.value)}
+                    required={motoristaParaEditar?.id === 'NEW'}
+                    placeholder={motoristaParaEditar?.id === 'NEW' ? 'Mínimo 6 caracteres' : '••••••• (inalterada)'}
+                    minLength={motoristaParaEditar?.id === 'NEW' ? 6 : undefined}
+                    disabled={salvandoMotorista}
+                  />
                 </div>
               </div>
               <div style={{ marginTop: '1.5rem', display: 'flex', gap: '1rem' }}>
