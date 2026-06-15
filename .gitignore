@@ -42,3 +42,7 @@ ui-debug.log
 .env.test.local
 .env.production.local
 .env.production
+
+# Bot credentials
+bot/.env
+bot/serviceAccountKey.json

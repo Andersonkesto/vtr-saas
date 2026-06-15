@@ -1,0 +1,57 @@
+Sim, podemos iniciar por esse projeto. Já deixei um primeiro bot pronto em bot, separado do React/Vite.
+
+Ele responde:
+
+!vtr
+Consulta pelo WhatsApp do policial na coleção motoristas, pega a matrícula e verifica se existe alguma viaturas com:
+
+status = em_servico
+matricula_ativa = matrícula do policial
+!status
+Lista todas as VTRs cadastradas e seus respectivos status.
+
+Arquivos principais criados:
+
+bot/src/server.js: webhook da Evolution.
+bot/src/commands.js: lógica dos comandos !vtr e !status.
+bot/src/evolution.js: envio de resposta pelo WhatsApp.
+bot/.env.example: modelo de configuração.
+bot/README.md: instruções para rodar.
+Também protegi no .gitignore:
+
+bot/.env
+bot/serviceAccountKey.json
+Validação feita: os arquivos principais passaram no node --check.
+
+Próximo passo prático:
+
+cd bot
+npm install
+cp .env.example .env
+npm start
+Depois é configurar a Evolution para chamar:
+
+https://seu-dominio.com/evolution/webhook?secret=SEU_SEGREDO
+A ideia ficou bem encaixada com seu sistema atual: não precisa mudar a tela de assunção, porque o bot usa os mesmos campos que já existem no Firestore.
+
+
+README.md
+Document · MD
+
+Edited 9 files
++328
+-0
+
+.gitignore
++4
+-0
+
+bot/.env.example
++19
+-0
+
+bot/README.md
++34
+-0
+
+Show 6 more files

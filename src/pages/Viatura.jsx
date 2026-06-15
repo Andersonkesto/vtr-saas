@@ -6,6 +6,8 @@ import { db, storage } from '../firebase';
 import { hashPassword } from '../lib/security';
 import { ShieldAlert, CheckCircle, Car, AlertCircle, ClipboardCheck, MapPin, Camera, List, ChevronRight, AlertTriangle, Info, CheckCircle2, User, LogOut, UserPlus, Download, X } from 'lucide-react';
 
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3333';
+
 /**
  * Componente: Viatura (Página Operacional - Mobile/Front-end)
  * Propósito: Interface de uso diário dos policiais na rua para gerenciamento do ciclo de vida do turno.
@@ -206,20 +208,18 @@ export default function Viatura() {
     if (resetMat && resetTok) {
       const validarToken = async () => {
         try {
-          const docSnap = await getDoc(doc(db, 'motoristas', resetMat));
-          if (docSnap.exists()) {
-            const data = docSnap.data();
-            if (data.reset_token === resetTok && data.reset_token_expires && Date.now() < data.reset_token_expires) {
-              setResetMatricula(resetMat);
-              setResetToken(resetTok);
-              setShowResetModal(true);
-            } else {
-              showAlert("Link Expirado ou Inválido", "Este link de recuperação de senha já expirou (validade de 15 minutos) ou é inválido.", "danger", () => {
-                navigate(window.location.pathname, { replace: true });
-              });
-            }
+          const response = await fetch(`${API_URL}/api/validate-token`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ matricula: resetMat, token: resetTok })
+          });
+          const resData = await response.json();
+          if (response.ok && resData.ok) {
+            setResetMatricula(resetMat);
+            setResetToken(resetTok);
+            setShowResetModal(true);
           } else {
-            showAlert("Erro", "Motorista correspondente não encontrado.", "danger", () => {
+            showAlert("Link Expirado ou Inválido", resData.error || "Este link de recuperação de senha já expirou (validade de 15 minutos) ou é inválido.", "danger", () => {
               navigate(window.location.pathname, { replace: true });
             });
           }
@@ -243,82 +243,23 @@ export default function Viatura() {
     }
     setRecovering(true);
     try {
-      const motDocRef = doc(db, 'motoristas', recoverMatricula);
-      const motSnap = await getDoc(motDocRef);
-      if (!motSnap.exists()) {
-        showAlert("Erro", "Matrícula não cadastrada no sistema.", "danger");
-        setRecovering(false);
-        return;
-      }
-      const motData = motSnap.data();
-      if (!motData.telefone) {
-        showAlert("Erro", "Não há telefone cadastrado para esta matrícula. Entre em contato com a administração/P4.", "danger");
-        setRecovering(false);
-        return;
-      }
-
-      const token = Math.random().toString(36).substring(2, 8).toUpperCase();
-      const expiresAt = Date.now() + 15 * 60 * 1000; // 15 minutos
-
-      await updateDoc(motDocRef, {
-        reset_token: token,
-        reset_token_expires: expiresAt
+      const response = await fetch(`${API_URL}/api/recover-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ matricula: recoverMatricula, origin: window.location.origin })
       });
-
-      const waSnap = await getDoc(doc(db, 'settings', 'whatsapp'));
-      if (waSnap.exists()) {
-        const waConfig = waSnap.data();
-        if (waConfig.enabled && waConfig.url && waConfig.instance && waConfig.apikey) {
-          let baseUrl = waConfig.url.trim();
-          if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
-
-          const resetLink = `${window.location.origin}/vtr?reset_matricula=${recoverMatricula}&reset_token=${token}`;
-          const msg = `🔔 *VTR SaaS - Recuperação de Senha* 🔔\n\n` +
-            `Olá, *${motData.graduacao} ${motData.nome}*!\n\n` +
-            `Recebemos uma solicitação para redefinir a sua senha de acesso ao sistema VTR SaaS.\n\n` +
-            `Para definir uma nova senha, clique no link seguro abaixo (válido por 15 minutos):\n` +
-            `👉 ${resetLink}\n\n` +
-            `Caso você não tenha solicitado esta redefinição, pedimos que ignore esta mensagem.\n\n` +
-            `*VTR SaaS - por SD Anderson*`;
-
-          const headers = { 'Content-Type': 'application/json', 'apikey': waConfig.apikey.trim() };
-          const endpoint = `${baseUrl}/message/sendText/${waConfig.instance.trim()}`;
-
-          const foneLimpo = motData.telefone.replace(/\D/g, '');
-          const foneFormatado = foneLimpo && !foneLimpo.startsWith('55') && (foneLimpo.length === 10 || foneLimpo.length === 11) ? '55' + foneLimpo : foneLimpo;
-
-          if (foneFormatado) {
-            const response = await fetch(endpoint, {
-              method: 'POST',
-              headers,
-              body: JSON.stringify({
-                number: foneFormatado,
-                textMessage: { text: msg }
-              })
-            });
-
-            if (response.ok) {
-              showAlert("Sucesso!", "Link de recuperação enviado com sucesso via WhatsApp!", "success", () => {
-                setShowRecoverModal(false);
-                setRecoverMatricula('');
-              });
-            } else {
-              const errorMsg = await response.text();
-              console.error("Erro Evolution API:", errorMsg);
-              showAlert("Erro de Envio", "Não foi possível disparar a mensagem pelo WhatsApp. Evolution API retornou erro.", "danger");
-            }
-          } else {
-            showAlert("Erro de Contato", "O número de telefone registrado possui formato inválido.", "danger");
-          }
-        } else {
-          showAlert("Integração Inativa", "A recuperação de senha via WhatsApp não está ativada ou configurada na central.", "warning");
-        }
+      const resData = await response.json();
+      if (response.ok && resData.ok) {
+        showAlert("Sucesso!", "Link de recuperação enviado com sucesso via WhatsApp!", "success", () => {
+          setShowRecoverModal(false);
+          setRecoverMatricula('');
+        });
       } else {
-        showAlert("Integração Inativa", "A recuperação de senha via WhatsApp não está configurada.", "warning");
+        showAlert("Erro", resData.error || "Não foi possível enviar a recuperação pelo WhatsApp.", "danger");
       }
     } catch (err) {
       console.error(err);
-      showAlert("Erro", "Erro ao tentar processar a solicitação de recuperação.", "danger");
+      showAlert("Erro de Conexão", "Não foi possível conectar ao servidor de recuperação.", "danger");
     } finally {
       setRecovering(false);
     }
@@ -332,40 +273,30 @@ export default function Viatura() {
     }
     setResetting(true);
     try {
-      const motDocRef = doc(db, 'motoristas', resetMatricula);
-      const docSnap = await getDoc(motDocRef);
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        if (data.reset_token === resetToken && data.reset_token_expires && Date.now() < data.reset_token_expires) {
-          // SEGURANÇA: Salva como hash e remove campos de reset
-          const senhaHash = await hashPassword(newPassword);
-          await updateDoc(motDocRef, {
-            senha_hash: senhaHash,
-            senha: null,           // Remove campo legado
-            reset_token: null,
-            reset_token_expires: null,
-            atualizado_em: serverTimestamp()
-          });
-
-          showAlert("Sucesso!", "Sua senha foi redefinida com sucesso! Faça login agora.", "success", () => {
-            setShowResetModal(false);
-            setNewPassword('');
-            setResetMatricula('');
-            setResetToken('');
-            navigate(window.location.pathname, { replace: true });
-          });
-        } else {
-          showAlert("Token Expirado", "O link de redefinição expirou durante o preenchimento.", "danger", () => {
-            setShowResetModal(false);
-            navigate(window.location.pathname, { replace: true });
-          });
-        }
+      const response = await fetch(`${API_URL}/api/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          matricula: resetMatricula,
+          token: resetToken,
+          novaSenha: newPassword
+        })
+      });
+      const resData = await response.json();
+      if (response.ok && resData.ok) {
+        showAlert("Sucesso!", "Sua senha foi redefinida com sucesso! Faça login agora.", "success", () => {
+          setShowResetModal(false);
+          setNewPassword('');
+          setResetMatricula('');
+          setResetToken('');
+          navigate(window.location.pathname, { replace: true });
+        });
       } else {
-        showAlert("Erro", "Cadastro do motorista não foi encontrado.", "danger");
+        showAlert("Erro", resData.error || "Não foi possível redefinir sua senha.", "danger");
       }
     } catch (err) {
-      if (import.meta.env.DEV) console.error(err);
-      showAlert("Erro", "Não foi possível redefinir sua senha.", "danger");
+      console.error(err);
+      showAlert("Erro de Conexão", "Não foi possível conectar ao servidor para redefinir a senha.", "danger");
     } finally {
       setResetting(false);
     }
@@ -376,51 +307,31 @@ export default function Viatura() {
     if (!authMatricula || !authSenha) return;
     setAuthLoading(true);
     try {
-      const docSnap = await getDoc(doc(db, 'motoristas', authMatricula));
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-
-        // SEGURANÇA: Compara com hash SHA-256 (campo senha_hash).
-        // Mantém retrocompatibilidade com campo 'senha' legado (texto puro).
-        // Ao detectar login legado, migra automaticamente para hash.
-        const hashedInput = await hashPassword(authSenha);
-        const isValidHash = data.senha_hash && data.senha_hash === hashedInput;
-        const isLegacyValid = !data.senha_hash && data.senha && data.senha === authSenha;
-
-        if (isValidHash || isLegacyValid) {
-          // Auto-migração: se a senha ainda está em texto puro, converte para hash
-          if (isLegacyValid) {
-            try {
-              await updateDoc(doc(db, 'motoristas', authMatricula), {
-                senha_hash: hashedInput,
-                senha: null // Remove o campo legado
-              });
-            } catch (migErr) {
-              if (import.meta.env.DEV) console.warn('Auto-migração de senha:', migErr);
-            }
-          }
-
-          // SEGURANÇA: Telefone não armazenado no localStorage (dado sensível desnecessário no cliente)
-          const userData = {
-            matricula: authMatricula,
-            graduacao: data.graduacao,
-            nome: data.nome,
-            telefone: data.telefone, // Necessário para notificações WhatsApp — aceito como trade-off
-            expiresAt: Date.now() + 30 * 60 * 1000
-          };
-          setMeUser(userData);
-          localStorage.setItem('vtr_me_user', JSON.stringify(userData));
-          if (prefixo) navigate(`/vtr/${prefixo}`);
-          else navigate('/vtr');
-        } else {
-          showAlert("Erro", "Senha incorreta.", "danger");
-        }
+      const response = await fetch(`${API_URL}/api/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ matricula: authMatricula, senha: authSenha })
+      });
+      const resData = await response.json();
+      if (response.ok && resData.ok) {
+        const { motorista: data } = resData;
+        const userData = {
+          matricula: authMatricula,
+          graduacao: data.graduacao,
+          nome: data.nome,
+          telefone: data.telefone,
+          expiresAt: Date.now() + 30 * 60 * 1000
+        };
+        setMeUser(userData);
+        localStorage.setItem('vtr_me_user', JSON.stringify(userData));
+        if (prefixo) navigate(`/vtr/${prefixo}`);
+        else navigate('/vtr');
       } else {
-        showAlert("Erro", "Matrícula não encontrada. Cadastre-se primeiro.", "warning");
+        showAlert("Erro", resData.error || "Falha ao realizar login.", "danger");
       }
     } catch (err) {
       if (import.meta.env.DEV) console.error(err);
-      showAlert("Erro", "Falha ao realizar login.", "danger");
+      showAlert("Erro", "Falha de conexão com o servidor de login.", "danger");
     } finally {
       setAuthLoading(false);
     }
@@ -434,44 +345,40 @@ export default function Viatura() {
     }
     setAuthLoading(true);
     try {
-      const docSnap = await getDoc(doc(db, 'motoristas', authMatricula));
-      if (docSnap.exists()) {
-        showAlert("Erro", "Matrícula já está cadastrada no sistema. Faça o login.", "danger");
-        setAuthLoading(false);
-        return;
-      }
-
-      // SEGURANÇA: Armazena hash da senha, nunca o texto puro
-      const senhaHash = await hashPassword(authSenha);
-
-      const data = {
-        graduacao: authGraduacao,
-        nome: authNome,
-        matricula: authMatricula,
-        telefone: authTelefone,
-        senha_hash: senhaHash,
-        criado_em: serverTimestamp(),
-        atualizado_em: serverTimestamp()
-      };
-      await setDoc(doc(db, 'motoristas', authMatricula), data);
-
-      const userData = {
-        matricula: authMatricula,
-        graduacao: authGraduacao,
-        nome: authNome,
-        telefone: authTelefone,
-        expiresAt: Date.now() + 30 * 60 * 1000
-      };
-      setMeUser(userData);
-      localStorage.setItem('vtr_me_user', JSON.stringify(userData));
-
-      showAlert("Sucesso", "Cadastro realizado com sucesso! Bem-vindo.", "success", () => {
-        if (prefixo) navigate(`/vtr/${prefixo}`);
-        else navigate('/vtr');
+      const response = await fetch(`${API_URL}/api/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          matricula: authMatricula,
+          senha: authSenha,
+          graduacao: authGraduacao,
+          nome: authNome,
+          telefone: authTelefone
+        })
       });
+      const resData = await response.json();
+      if (response.ok && resData.ok) {
+        const { motorista: data } = resData;
+        const userData = {
+          matricula: authMatricula,
+          graduacao: authGraduacao,
+          nome: authNome,
+          telefone: authTelefone,
+          expiresAt: Date.now() + 30 * 60 * 1000
+        };
+        setMeUser(userData);
+        localStorage.setItem('vtr_me_user', JSON.stringify(userData));
+
+        showAlert("Sucesso", "Cadastro realizado com sucesso! Bem-vindo.", "success", () => {
+          if (prefixo) navigate(`/vtr/${prefixo}`);
+          else navigate('/vtr');
+        });
+      } else {
+        showAlert("Erro", resData.error || "Falha ao realizar cadastro.", "danger");
+      }
     } catch (err) {
       if (import.meta.env.DEV) console.error(err);
-      showAlert("Erro", "Falha ao realizar cadastro.", "danger");
+      showAlert("Erro", "Falha ao realizar cadastro no servidor.", "danger");
     } finally {
       setAuthLoading(false);
     }
@@ -844,22 +751,9 @@ export default function Viatura() {
             let baseUrl = waConfig.url.trim();
             if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
 
-            // Obter dados do motorista para exibir o nome correto na notificação de fim e pegar o telefone
-            let motoristaNomeFinal = motorista || 'Desconhecido';
-            let foneMotorista = meUser && meUser.telefone ? meUser.telefone : '';
-
-            try {
-              const motSnap = await getDoc(doc(db, 'motoristas', matriculaConfirmacao));
-              if (motSnap.exists()) {
-                const motData = motSnap.data();
-                motoristaNomeFinal = `${motData.graduacao} ${motData.nome}`;
-                if (!foneMotorista) {
-                  foneMotorista = motData.telefone;
-                }
-              }
-            } catch (motErr) {
-              console.warn("Erro ao buscar dados do motorista para fim de serviço:", motErr);
-            }
+            // Obter dados do motorista logado (sessão local)
+            const motoristaNomeFinal = motorista || (meUser ? `${meUser.graduacao} ${meUser.nome}` : 'Desconhecido');
+            const foneMotorista = meUser && meUser.telefone ? meUser.telefone : '';
 
             const msg = `🔔 *VTR SaaS - Fim de Serviço* 🔔\n\n` +
               `*Viatura:* VTR ${prefixo}\n` +
@@ -1182,9 +1076,9 @@ export default function Viatura() {
           <button onClick={handleLogoutMe} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer' }} title="Sair da Conta ME"><LogOut size={20} /></button>
         </div>
         <h2 style={{ color: 'white', margin: 0, fontSize: '2rem' }}>VTR {prefixo}</h2>
-        <p style={{ opacity: 0.9, marginTop: '0.5rem' }}>
-          Status: {viatura.status === 'disponivel' ? 'Disponível' : 'Em Serviço'}
-        </p>
+          <p style={{ opacity: 0.9, marginTop: '0.5rem' }}>
+            Status: {viatura && viatura.status === 'disponivel' ? 'Disponível' : viatura ? viatura.status : 'Carregando...'}
+          </p>
       </div>
 
       {viatura.status === 'disponivel' ? (
