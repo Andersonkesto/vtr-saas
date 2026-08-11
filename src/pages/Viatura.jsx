@@ -6,7 +6,9 @@ import { db, storage } from '../firebase';
 import { hashPassword } from '../lib/security';
 import { ShieldAlert, CheckCircle, Car, AlertCircle, ClipboardCheck, MapPin, Camera, List, ChevronRight, AlertTriangle, Info, CheckCircle2, User, LogOut, UserPlus, Download, X } from 'lucide-react';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3333';
+// Em produção, usa o mesmo domínio do Hosting. No desenvolvimento, usa a
+// Function publicada, salvo se VITE_API_URL apontar para um emulador local.
+const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'https://vtrsaas.web.app' : '');
 
 /**
  * Componente: Viatura (Página Operacional - Mobile/Front-end)
@@ -124,6 +126,7 @@ export default function Viatura() {
   const [motorista, setMotorista] = useState('');
   const [patrulheiro, setPatrulheiro] = useState('');
   const [kmInicial, setKmInicial] = useState('');
+  const [kmUltimaTrocaOleo, setKmUltimaTrocaOleo] = useState('');
   const [finalidade, setFinalidade] = useState('');
   const [realizouGalope, setRealizouGalope] = useState(false);
   const [temAlteracaoInicial, setTemAlteracaoInicial] = useState(false);
@@ -577,6 +580,10 @@ export default function Viatura() {
     }
   }, [viatura]);
 
+  useEffect(() => {
+    setKmUltimaTrocaOleo('');
+  }, [prefixo]);
+
   const handleIniciarServico = async (e) => {
     e.preventDefault();
     if (matricula.length !== 7) {
@@ -594,6 +601,13 @@ export default function Viatura() {
     if (temAlteracaoInicial && !descAlteracaoInicial.trim()) {
       setTentouSubmeter(true);
       showAlert("Descrição Obrigatória", "Você marcou que identificou uma alteração. Por favor, descreva o problema.", "warning");
+      return;
+    }
+
+    const kmTrocaInformado = kmUltimaTrocaOleo !== '';
+    const kmTrocaOleo = Number(kmUltimaTrocaOleo);
+    if (kmTrocaInformado && (!Number.isFinite(kmTrocaOleo) || kmTrocaOleo < 0 || kmTrocaOleo > Number(kmInicial))) {
+      showAlert("KM da Troca Inválido", "A última troca de óleo deve ser um valor entre 0 e o KM inicial informado.", "warning");
       return;
     }
 
@@ -615,6 +629,10 @@ export default function Viatura() {
         timestamp: serverTimestamp()
       };
 
+      if (kmTrocaInformado) {
+        servicoData.km_ultima_troca_oleo = kmTrocaOleo;
+      }
+
       if (loc.lat && loc.lng) {
         servicoData.lat_inicial = loc.lat;
         servicoData.lng_inicial = loc.lng;
@@ -622,12 +640,16 @@ export default function Viatura() {
 
       const servicoRef = await addDoc(collection(db, 'servicos'), servicoData);
 
-      await updateDoc(doc(db, 'viaturas', prefixo), {
+      const dadosViatura = {
         status: 'em_servico',
         km_atual: Number(kmInicial),
         servico_atual_id: servicoRef.id,
         matricula_ativa: matricula
-      });
+      };
+      if (kmTrocaInformado) {
+        dadosViatura.km_ultima_troca = kmTrocaOleo;
+      }
+      await updateDoc(doc(db, 'viaturas', prefixo), dadosViatura);
 
       if (temAlteracaoInicial) {
         await criarTicketManutencao(descAlteracaoInicial, 'Assunção', servicoRef.id, fotoAlteracaoInicial);
@@ -798,7 +820,7 @@ export default function Viatura() {
     }
   };
 
-  if (loading) {
+  if (loading || (prefixo && !viatura && !error)) {
     return (
       <div className="container fade-in" style={{ maxWidth: '500px', marginLeft: 'auto', marginRight: 'auto', marginTop: '2rem' }}>
         <div className="skeleton skeleton-card" style={{ height: '120px' }}></div>
@@ -1118,6 +1140,10 @@ export default function Viatura() {
               <div className="form-group">
                 <label className="form-label">KM Inicial</label>
                 <input type="number" className="form-input" required value={kmInicial} onChange={(e) => setKmInicial(e.target.value)} min={viatura.km_atual || 0} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Última Troca de Óleo (KM) <span className="text-muted" style={{ fontWeight: 400 }}>(Opcional)</span></label>
+                <input type="number" className="form-input" value={kmUltimaTrocaOleo} onChange={(e) => setKmUltimaTrocaOleo(e.target.value)} min="0" max={kmInicial || undefined} placeholder={`Atual: ${viatura.km_ultima_troca || 'não informado'} km`} />
               </div>
               <div className="form-group">
                 <label className="form-label">Finalidade</label>

@@ -96,6 +96,10 @@ export default function Admin() {
   const [salvandoMotorista, setSalvandoMotorista] = useState(false);
 
   const [vtrPerfilModal, setVtrPerfilModal] = useState(null);
+  const [editandoSaldoManual, setEditandoSaldoManual] = useState(false);
+  const [saldoManual, setSaldoManual] = useState('');
+  const [dataSaldoManual, setDataSaldoManual] = useState('');
+  const [salvandoSaldoManual, setSalvandoSaldoManual] = useState(false);
   const [manutencaoSelecionada, setManutencaoSelecionada] = useState(null);
   const [manutencaoResolucaoModal, setManutencaoResolucaoModal] = useState(null);
   const [servicoSelecionado, setServicoSelecionado] = useState(null);
@@ -499,6 +503,59 @@ export default function Admin() {
       } catch (e) { console.error(e); }
     }
     setVtrPerfilModal(dadosExtras);
+  };
+
+  const dataHoraLocalParaInput = (valor) => {
+    const match = String(valor || '').match(/^(\d{2})\/(\d{2})\/(\d{4})\s*(\d{2}):(\d{2})/);
+    if (match) return `${match[3]}-${match[2]}-${match[1]}T${match[4]}:${match[5]}`;
+    const agora = new Date();
+    const pad = (numero) => String(numero).padStart(2, '0');
+    return `${agora.getFullYear()}-${pad(agora.getMonth() + 1)}-${pad(agora.getDate())}T${pad(agora.getHours())}:${pad(agora.getMinutes())}`;
+  };
+
+  const abrirEdicaoSaldoManual = () => {
+    if (!vtrPerfilModal) return;
+    const saldoAtual = vtrPerfilModal.saldo_cartao ?? vtrPerfilModal.saldoCartao;
+    setSaldoManual(saldoAtual === undefined || saldoAtual === null ? '' : String(saldoAtual));
+    setDataSaldoManual(dataHoraLocalParaInput(vtrPerfilModal.data_atualizacao_saldo ?? vtrPerfilModal.dataAtualizacaoSaldo));
+    setEditandoSaldoManual(true);
+  };
+
+  const salvarSaldoManual = async () => {
+    if (!vtrPerfilModal || salvandoSaldoManual) return;
+    const saldo = getSaldoCartao({ saldo_cartao: saldoManual });
+    if (saldo === null || saldo < 0 || !dataSaldoManual) {
+      alert('Informe um saldo válido e a data/hora da consulta.');
+      return;
+    }
+
+    const [data, hora] = dataSaldoManual.split('T');
+    const [ano, mes, dia] = data.split('-');
+    const dataFormatada = `${dia}/${mes}/${ano} ${hora}`;
+    setSalvandoSaldoManual(true);
+    try {
+      await updateDoc(doc(db, 'viaturas', vtrPerfilModal.id), {
+        saldo_cartao: saldo.toFixed(2).replace('.', ','),
+        saldoCartao: saldo.toFixed(2).replace('.', ','),
+        data_atualizacao_saldo: dataFormatada,
+        dataAtualizacaoSaldo: dataFormatada,
+        atualizado_em: serverTimestamp()
+      });
+      setVtrPerfilModal((atual) => atual ? {
+        ...atual,
+        saldo_cartao: saldo.toFixed(2).replace('.', ','),
+        saldoCartao: saldo.toFixed(2).replace('.', ','),
+        data_atualizacao_saldo: dataFormatada,
+        dataAtualizacaoSaldo: dataFormatada
+      } : atual);
+      await registrarAuditoria('ATUALIZAR_SALDO_MANUAL', { prefixo: vtrPerfilModal.prefixo, saldo, data_consulta: dataFormatada });
+      setEditandoSaldoManual(false);
+    } catch (erro) {
+      console.error('Erro ao salvar saldo manual:', erro);
+      alert('Não foi possível salvar o saldo manual.');
+    } finally {
+      setSalvandoSaldoManual(false);
+    }
   };
 
   const carregarHistorico = async (prefixo = null) => {
@@ -1153,13 +1210,52 @@ export default function Admin() {
   };
 
   const getStatusOleo = (vtr) => {
-    const kmAtual = vtr.km_atual || 0;
-    const proxima = vtr.km_ultima_troca || 0;
+    const kmAtual = Number(vtr.km_atual) || 0;
+    const proxima = getProximaTrocaOleo(vtr);
     const faltam = proxima - kmAtual;
     if (faltam <= 0) return { label: 'TROCAR AGORA', class: 'alert-red' };
     if (faltam <= 500) return { label: `Faltam ${faltam}km`, class: 'alert-orange' };
     return { label: `Faltam ${faltam}km`, class: 'text-muted' };
   };
+
+  const getProximaTrocaOleo = (vtr) => {
+    const ultimaTroca = Number(vtr.km_ultima_troca) || 0;
+    const intervalo = Number(vtr.intervalo_troca) || 5000;
+    return ultimaTroca + intervalo;
+  };
+
+  const getSaldoCartao = (vtr) => {
+    const saldoBruto = vtr.saldo_cartao ?? vtr.saldoCartao;
+    if (typeof saldoBruto === 'number') return saldoBruto;
+    if (saldoBruto === undefined || saldoBruto === null || saldoBruto === '') return null;
+    const textoSaldo = String(saldoBruto).replace(/[^\d,.-]/g, '');
+    const normalizado = textoSaldo.includes(',') ? textoSaldo.replace(/\./g, '').replace(',', '.') : textoSaldo;
+    const saldo = Number(normalizado);
+    return Number.isFinite(saldo) ? saldo : null;
+  };
+
+  const saldoFoiConsultadoHoje = (vtr) => {
+    const data = vtr.data_atualizacao_saldo ?? vtr.dataAtualizacaoSaldo;
+    if (!data) return false;
+    const hoje = new Date();
+    const dataHoje = `${String(hoje.getDate()).padStart(2, '0')}/${String(hoje.getMonth() + 1).padStart(2, '0')}/${hoje.getFullYear()}`;
+    if (typeof data?.toDate === 'function') return data.toDate().toDateString() === hoje.toDateString();
+    return String(data).startsWith(dataHoje);
+  };
+
+  const getStatusSaldo = (vtr) => {
+    const saldo = getSaldoCartao(vtr);
+    const atualizadoHoje = saldoFoiConsultadoHoje(vtr);
+    const ok = saldo !== null && saldo >= 500 && atualizadoHoje;
+    return { saldo, atualizadoHoje, ok, label: ok ? 'Saldo OK' : 'Consultar saldo' };
+  };
+
+  const vtrsSaldoBaixo = viaturas
+    .filter((vtr) => {
+      const saldo = getSaldoCartao(vtr);
+      return saldo !== null && saldo < 500;
+    })
+    .sort((a, b) => getSaldoCartao(a) - getSaldoCartao(b));
 
   const getStatusRevisao = (vtr) => {
     const kmProxima = vtr.km_proxima_revisao || 0;
@@ -1751,7 +1847,7 @@ export default function Admin() {
                 <div className="form-group"><label className="form-label">Ano</label><input type="text" className="form-input" value={editAno} onChange={e => setEditAno(e.target.value)} placeholder="2023/2024" disabled={salvandoVtr} /></div>
                 <div className="form-group"><label className="form-label">Cartão Abast.</label><input type="text" className="form-input" value={editCartao} onChange={e => setEditCartao(e.target.value)} disabled={salvandoVtr} /></div>
                 <div className="form-group"><label className="form-label">KM Atual</label><input type="number" className="form-input" value={editKmAtual} onChange={e => setEditKmAtual(e.target.value)} disabled={salvandoVtr} /></div>
-                <div className="form-group"><label className="form-label">Próxima Troca</label><input type="number" className="form-input" value={editKmUltimaTroca} onChange={e => setEditKmUltimaTroca(e.target.value)} disabled={salvandoVtr} /></div>
+                <div className="form-group"><label className="form-label">Última Troca de Óleo</label><input type="number" className="form-input" value={editKmUltimaTroca} onChange={e => setEditKmUltimaTroca(e.target.value)} disabled={salvandoVtr} /></div>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', marginTop: '0.5rem' }}>
                 <div className="form-group"><label className="form-label">Intervalo Troca Óleo (km)</label><input type="number" className="form-input" value={editIntervaloTroca} onChange={e => setEditIntervaloTroca(e.target.value)} disabled={salvandoVtr} /></div>
@@ -1917,6 +2013,34 @@ export default function Admin() {
         </div>
       )}
 
+      {editandoSaldoManual && vtrPerfilModal && (
+        <div className="modal-overlay" onClick={() => !salvandoSaldoManual && setEditandoSaldoManual(false)} style={{ zIndex: 2100 }}>
+          <div className="modal-content fade-in" onClick={e => e.stopPropagation()} style={{ maxWidth: '430px' }}>
+            <div className="flex-between">
+              <div>
+                <h3 style={{ margin: 0 }}>Lançar saldo manual</h3>
+                <p className="text-muted" style={{ margin: '0.35rem 0 0', fontSize: '0.82rem' }}>VTR {vtrPerfilModal.prefixo} · Cartão {vtrPerfilModal.cartao_abastecimento || 'não informado'}</p>
+              </div>
+              <button type="button" onClick={() => setEditandoSaldoManual(false)} className="btn-icon" disabled={salvandoSaldoManual}><X /></button>
+            </div>
+            <div style={{ display: 'grid', gap: '1rem', marginTop: '1.25rem' }}>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label">Saldo consultado (R$)</label>
+                <input type="text" inputMode="decimal" className="form-input" value={saldoManual} onChange={e => setSaldoManual(e.target.value)} placeholder="Ex.: 750,00" disabled={salvandoSaldoManual} autoFocus />
+              </div>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label">Data e hora da consulta</label>
+                <input type="datetime-local" className="form-input" value={dataSaldoManual} onChange={e => setDataSaldoManual(e.target.value)} disabled={salvandoSaldoManual} />
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1.5rem' }}>
+              <button type="button" className="btn btn-secondary" onClick={() => setEditandoSaldoManual(false)} disabled={salvandoSaldoManual}>Cancelar</button>
+              <button type="button" className="btn btn-primary" onClick={salvarSaldoManual} disabled={salvandoSaldoManual} style={{ flex: 1 }}>{salvandoSaldoManual ? 'Salvando...' : 'Salvar saldo'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {vtrPerfilModal && (
         <div className="modal-overlay" onClick={() => setVtrPerfilModal(null)}>
           <div className="modal-content fade-in" onClick={e => e.stopPropagation()} style={{ maxWidth: '620px', borderTop: '5px solid var(--bm-green)' }}>
@@ -1935,11 +2059,36 @@ export default function Admin() {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '1.25rem' }}>
                 <div><label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, display: 'block', textTransform: 'uppercase', marginBottom: '4px' }}>Placa</label><strong style={{ fontSize: '1rem' }}>{vtrPerfilModal.placa || '---'}</strong></div>
                 <div><label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, display: 'block', textTransform: 'uppercase', marginBottom: '4px' }}>Ano / Modelo</label><strong style={{ fontSize: '1rem' }}>{vtrPerfilModal.ano || '---'}</strong></div>
-                <div style={{ gridColumn: '1 / -1' }}><label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, display: 'block', textTransform: 'uppercase', marginBottom: '4px' }}>Nº Cartão Abastecimento</label><strong style={{ fontSize: '1rem' }}>{vtrPerfilModal.cartao_abastecimento || '---'}</strong></div>
+                <div style={{ gridColumn: '1 / -1', background: 'var(--hover-bg, rgba(255,255,255,0.03))', padding: '0.75rem 1rem', borderRadius: '8px', border: '1px solid var(--border-color, rgba(255,255,255,0.1))', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '4px' }}>
+                      <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', margin: 0 }}>Nº Cartão Abastecimento</label>
+                      <a href="https://www.ticketlog.com.br/" target="_blank" rel="noreferrer" style={{ fontSize: '0.65rem', color: 'var(--bm-gold, #eab308)', textDecoration: 'none', background: 'rgba(234,179,8,0.1)', padding: '1px 6px', borderRadius: '4px' }}>Consultar Ticket Log 🔗</a>
+                    </div>
+                    <strong style={{ fontSize: '1rem', letterSpacing: '0.5px' }}>{vtrPerfilModal.cartao_abastecimento || '---'}</strong>
+                  </div>
+                  {(vtrPerfilModal.saldo_cartao !== undefined || vtrPerfilModal.saldoCartao !== undefined) ? (
+                    <div style={{ background: 'rgba(34, 197, 94, 0.12)', border: '1px solid rgba(34, 197, 94, 0.3)', color: '#22c55e', padding: '0.4rem 0.8rem', borderRadius: '6px', textAlign: 'right' }}>
+                      <div style={{ fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 700, opacity: 0.9 }}>Saldo do Dia (Ticket Log)</div>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 800 }}>R$ {vtrPerfilModal.saldo_cartao ?? vtrPerfilModal.saldoCartao}</div>
+                      <div style={{ fontSize: '0.7rem', fontWeight: 800, marginTop: '2px', color: getStatusSaldo(vtrPerfilModal).ok ? '#22c55e' : '#eab308' }}>{getStatusSaldo(vtrPerfilModal).label}</div>
+                      <div style={{ fontSize: '0.65rem', opacity: 0.8, marginTop: '2px' }}>
+                        {vtrPerfilModal.data_atualizacao_saldo || vtrPerfilModal.dataAtualizacaoSaldo ? `Atualizado: ${vtrPerfilModal.data_atualizacao_saldo || vtrPerfilModal.dataAtualizacaoSaldo}` : 'Atualização diária agendada'}
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ background: 'rgba(234, 179, 8, 0.1)', border: '1px solid rgba(234, 179, 8, 0.25)', color: '#eab308', padding: '0.4rem 0.8rem', borderRadius: '6px', fontSize: '0.75rem', fontWeight: 600 }}>
+                      Saldo: Verificação Pendente
+                    </div>
+                  )}
+                  <button type="button" onClick={abrirEdicaoSaldoManual} className="btn btn-secondary" style={{ width: 'auto', padding: '0.45rem 0.65rem', fontSize: '0.75rem' }}>
+                    <Edit size={14} /> {vtrPerfilModal.saldo_cartao !== undefined || vtrPerfilModal.saldoCartao !== undefined ? 'Editar saldo manual' : 'Informar saldo manual'}
+                  </button>
+                </div>
                 <div><label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, display: 'block', textTransform: 'uppercase', marginBottom: '4px' }}>KM Atual</label><strong style={{ fontSize: '1rem' }}>{vtrPerfilModal.km_atual || 0} km</strong></div>
                 <div>
                   <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, display: 'block', textTransform: 'uppercase', marginBottom: '4px' }}>Próxima Troca Óleo</label>
-                  <strong style={{ fontSize: '1rem', color: getStatusOleo(vtrPerfilModal).class === 'alert-red' ? 'red' : 'inherit' }}>{vtrPerfilModal.km_ultima_troca || 0} km</strong>
+                  <strong style={{ fontSize: '1rem', color: getStatusOleo(vtrPerfilModal).class === 'alert-red' ? 'red' : 'inherit' }}>{getProximaTrocaOleo(vtrPerfilModal)} km</strong>
                   <span className={getStatusOleo(vtrPerfilModal).class} style={{ fontSize: '0.8rem', display: 'block', marginTop: '2px' }}>{getStatusOleo(vtrPerfilModal).label}</span>
                 </div>
                 <div>
@@ -2115,6 +2264,7 @@ export default function Admin() {
                   .map(vtr => {
                   const statusOleo = getStatusOleo(vtr);
                   const statusRevisao = getStatusRevisao(vtr);
+                  const statusSaldo = getStatusSaldo(vtr);
                   const cardStatusClass = vtr.status === 'baixada' ? 'fleet-card-down' : vtr.status === 'em_servico' ? 'fleet-card-active' : 'fleet-card-standby';
                   const statusLabel = vtr.status === 'em_servico' ? 'Em uso' : vtr.status === 'baixada' ? 'Baixada' : 'Fora de serviço';
                   return (
@@ -2135,6 +2285,7 @@ export default function Admin() {
                       <div className="fleet-card-meta">
                         <span>{vtr.km_atual || 0} km</span>
                         <span className={statusOleo.class}>{statusOleo.label}</span>
+                        <span style={{ color: statusSaldo.ok ? 'var(--status-available, #22c55e)' : 'var(--status-warning, #eab308)', fontWeight: 700 }}>{statusSaldo.label}</span>
                         <span className={statusRevisao?.class || ''}>{statusRevisao ? statusRevisao.label : 'Revisão ---'}</span>
                       </div>
                     </button>
@@ -2154,6 +2305,29 @@ export default function Admin() {
                     <Legend />
                   </PieChart>
                 </ResponsiveContainer>
+              </div>
+              <div style={{ marginTop: '1rem', paddingTop: '0.9rem', borderTop: '1px solid var(--border-color)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--status-warning, #eab308)', marginBottom: '0.65rem' }}>
+                  <AlertTriangle size={16} />
+                  <strong style={{ fontSize: '0.8rem' }}>Saldos abaixo de R$ 500</strong>
+                </div>
+                {vtrsSaldoBaixo.length === 0 ? (
+                  <span className="text-muted" style={{ fontSize: '0.8rem' }}>Nenhuma viatura com saldo baixo.</span>
+                ) : (
+                  <div style={{ display: 'grid', gap: '0.45rem', maxHeight: '150px', overflowY: 'auto', paddingRight: '3px' }}>
+                    {vtrsSaldoBaixo.map(vtr => (
+                      <button
+                        key={vtr.id}
+                        type="button"
+                        onClick={() => abrirPerfilViatura(vtr)}
+                        style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', width: '100%', padding: '0.5rem 0.6rem', border: '1px solid rgba(234, 179, 8, 0.35)', borderRadius: '6px', background: 'rgba(234, 179, 8, 0.08)', color: 'var(--text-main)', cursor: 'pointer', textAlign: 'left' }}
+                      >
+                        <span style={{ fontSize: '0.78rem', fontWeight: 700 }}>VTR {vtr.prefixo}{vtr.placa ? ` · ${vtr.placa}` : ''}</span>
+                        <span style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--status-warning, #eab308)' }}>R$ {getSaldoCartao(vtr).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>

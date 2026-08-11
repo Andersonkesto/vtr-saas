@@ -46,3 +46,8 @@ ui-debug.log
 # Bot credentials
 bot/.env
 bot/serviceAccountKey.json
+
+# Local credentials and Python runtime artifacts
+*-firebase-adminsdk-*.json
+venv/
+__pycache__/

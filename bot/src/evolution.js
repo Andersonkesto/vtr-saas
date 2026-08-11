@@ -1,8 +1,8 @@
-const evolutionUrl = process.env.EVOLUTION_URL?.replace(/\/$/, '');
-const evolutionInstance = process.env.EVOLUTION_INSTANCE;
-const evolutionApiKey = process.env.EVOLUTION_APIKEY;
+export async function sendText(number, text, config = {}) {
+  const evolutionUrl = config.url?.trim().replace(/\/$/, '') || process.env.EVOLUTION_URL?.replace(/\/$/, '');
+  const evolutionInstance = config.instance?.trim() || process.env.EVOLUTION_INSTANCE;
+  const evolutionApiKey = config.apikey?.trim() || process.env.EVOLUTION_APIKEY;
 
-export async function sendText(number, text) {
   if (!evolutionUrl || !evolutionInstance || !evolutionApiKey) {
     throw new Error('Configuração da Evolution incompleta.');
   }

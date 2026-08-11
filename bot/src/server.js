@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import crypto from 'crypto';
-import admin from 'firebase-admin';
+import { FieldValue } from 'firebase-admin/firestore';
 import { db } from './firebaseAdmin.js';
 import { sendText } from './evolution.js';
 import { parseEvolutionPayload } from './evolutionPayload.js';
@@ -57,7 +57,7 @@ app.post('/api/login', async (req, res) => {
         try {
           await docRef.update({
             senha_hash: hashedInput,
-            senha: admin.firestore.FieldValue.delete()
+            senha: FieldValue.delete()
           });
         } catch (migErr) {
           console.warn('Auto-migração de senha falhou:', migErr);
@@ -104,8 +104,8 @@ app.post('/api/register', async (req, res) => {
       matricula,
       telefone: telefone || '',
       senha_hash: senhaHash,
-      criado_em: admin.firestore.FieldValue.serverTimestamp(),
-      atualizado_em: admin.firestore.FieldValue.serverTimestamp()
+      criado_em: FieldValue.serverTimestamp(),
+      atualizado_em: FieldValue.serverTimestamp()
     };
 
     await docRef.set(data);
@@ -145,7 +145,8 @@ app.post('/api/recover-password', async (req, res) => {
       return res.status(400).json({ error: 'Não há telefone cadastrado para esta matrícula. Entre em contato com a administração/P4.' });
     }
 
-    const token = Math.random().toString(36).substring(2, 8).toUpperCase();
+    // Token criptograficamente seguro, válido por apenas 15 minutos.
+    const token = crypto.randomBytes(32).toString('base64url');
     const expiresAt = Date.now() + 15 * 60 * 1000; // 15 minutos
 
     await docRef.update({
@@ -157,7 +158,9 @@ app.post('/api/recover-password', async (req, res) => {
     if (waSnap.exists) {
       const waConfig = waSnap.data();
       if (waConfig.enabled && waConfig.url && waConfig.instance && waConfig.apikey) {
-        const clientOrigin = origin || 'http://localhost:5173';
+        // Em produção, APP_URL deve ser definido no ambiente do servidor.
+        // No desenvolvimento local, mantém compatibilidade com a origem enviada pelo front-end.
+        const clientOrigin = process.env.APP_URL || origin || 'http://localhost:5173';
         const resetLink = `${clientOrigin}/vtr?reset_matricula=${matricula}&reset_token=${token}`;
         const msg = `🔔 *VTR SaaS - Recuperação de Senha* 🔔\n\n` +
           `Olá, *${motData.graduacao} ${motData.nome}*!\n\n` +
@@ -171,7 +174,8 @@ app.post('/api/recover-password', async (req, res) => {
         const foneFormatado = foneLimpo && !foneLimpo.startsWith('55') && (foneLimpo.length === 10 || foneLimpo.length === 11) ? '55' + foneLimpo : foneLimpo;
 
         if (foneFormatado) {
-          await sendText(foneFormatado, msg);
+          // Usa a configuração salva pelo painel administrativo no Firestore.
+          await sendText(foneFormatado, msg, waConfig);
           return res.json({ ok: true });
         } else {
           return res.status(400).json({ error: 'O número de telefone registrado possui formato inválido.' });
@@ -229,10 +233,10 @@ app.post('/api/reset-password', async (req, res) => {
         const senhaHash = hashPassword(novaSenha);
         await docRef.update({
           senha_hash: senhaHash,
-          senha: admin.firestore.FieldValue.delete(),
-          reset_token: admin.firestore.FieldValue.delete(),
-          reset_token_expires: admin.firestore.FieldValue.delete(),
-          atualizado_em: admin.firestore.FieldValue.serverTimestamp()
+          senha: FieldValue.delete(),
+          reset_token: FieldValue.delete(),
+          reset_token_expires: FieldValue.delete(),
+          atualizado_em: FieldValue.serverTimestamp()
         });
         return res.json({ ok: true });
       }
@@ -252,7 +256,12 @@ app.post('/evolution/webhook', async (req, res) => {
   const expectedSecret = process.env.WEBHOOK_SECRET;
   const receivedSecret = req.query.secret || req.header('x-webhook-secret');
 
-  if (expectedSecret && receivedSecret !== expectedSecret) {
+  if (!expectedSecret) {
+    console.error('WEBHOOK_SECRET não configurado; webhook recusado.');
+    return res.status(503).json({ ok: false, error: 'webhook não configurado' });
+  }
+
+  if (receivedSecret !== expectedSecret) {
     return res.status(401).json({ ok: false, error: 'webhook não autorizado' });
   }
 
