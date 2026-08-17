@@ -75,7 +75,9 @@ export default function Admin() {
   const [relatorioBI, setRelatorioBI] = useState({
     stats: [],
     resumoGeral: { totalKm: 0, totalTurnos: 0, totalAlertas: 0, totalBaixas: 0 },
-    kmDiario: []
+    kmDiario: [],
+    periodo: 'Todo o histórico',
+    frota: { total: 0, disponiveis: 0, emServico: 0, baixadas: 0 }
   });
   const [modalRelatorioExecutivo, setModalRelatorioExecutivo] = useState(false);
 
@@ -332,7 +334,9 @@ export default function Admin() {
         const p = s.prefixo_vtr;
         if (!p || !biMap[p]) return;
 
-        const kmRodado = (s.km_final && s.km_inicial) ? (s.km_final - s.km_inicial) : 0;
+        const kmInicial = Number(s.km_inicial);
+        const kmFinal = Number(s.km_final);
+        const kmRodado = Number.isFinite(kmInicial) && Number.isFinite(kmFinal) ? Math.max(0, kmFinal - kmInicial) : 0;
         if (kmRodado >= 0) {
           biMap[p].kmTotal += kmRodado;
           gTotalKm += kmRodado;
@@ -420,13 +424,19 @@ export default function Admin() {
       const stats = Object.values(biMap).map(s => {
         const relatos = s.relatosMotorista || 0;
         const baixas = s.baixasAdmin || 0;
-        // Uptime: Taxa de disponibilidade calculada estrategicamente
-        const uptime = Math.max(75, 100 - (relatos * 6) - (baixas * 10));
+        const ocorrencias = relatos + baixas;
+        const taxaOcorrencias = s.turnos > 0 ? (ocorrencias / s.turnos) * 100 : 0;
+        const statusAtual = viaturas.find(v => v.prefixo === s.prefixo)?.status || 'sem status';
         return {
           ...s,
           kmMedio: s.turnos > 0 ? (s.kmTotal / s.turnos).toFixed(1) : 0,
-          scoreSaude: Math.max(0, 100 - (relatos * 10) - (baixas * 5)),
-          uptime: uptime.toFixed(1)
+          ocorrencias,
+          taxaOcorrencias: taxaOcorrencias.toFixed(1),
+          statusAtual,
+          // Campos de compatibilidade para o relatório executivo: são indicadores derivados,
+          // nunca uma medição histórica de disponibilidade.
+          scoreSaude: Math.max(0, 100 - Math.min(100, taxaOcorrencias)).toFixed(1),
+          uptime: statusAtual === 'baixada' ? '0.0' : '100.0'
         };
       }).sort((a, b) => b.kmTotal - a.kmTotal);
 
@@ -435,24 +445,34 @@ export default function Admin() {
       servicos.forEach(s => {
         const dataObj = s.timestamp?.toDate ? s.timestamp.toDate() : (s.timestamp?.seconds ? new Date(s.timestamp.seconds * 1000) : null);
         if (!dataObj) return;
-        const dataStr = dataObj.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
-        const kmRodado = (s.km_final && s.km_inicial) ? (s.km_final - s.km_inicial) : 0;
-        kmPorDia[dataStr] = (kmPorDia[dataStr] || 0) + kmRodado;
+        const dataChave = dataObj.toISOString().slice(0, 10);
+        const kmInicial = Number(s.km_inicial);
+        const kmFinal = Number(s.km_final);
+        const kmRodado = Number.isFinite(kmInicial) && Number.isFinite(kmFinal) ? Math.max(0, kmFinal - kmInicial) : 0;
+        kmPorDia[dataChave] = (kmPorDia[dataChave] || 0) + kmRodado;
       });
 
-      const kmDiario = Object.keys(kmPorDia).map(dia => ({
-        dia,
-        km: kmPorDia[dia]
-      })).sort((a, b) => {
-        const [diaA, mesA] = a.dia.split('/');
-        const [diaB, mesB] = b.dia.split('/');
-        return new Date(2026, mesA - 1, diaA) - new Date(2026, mesB - 1, diaB);
-      }).slice(-15);
+      const kmDiario = Object.keys(kmPorDia).sort().map(dataChave => ({
+        dia: new Date(`${dataChave}T12:00:00`).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }),
+        km: kmPorDia[dataChave]
+      })).slice(-15);
+
+      const frota = {
+        total: viaturasParaProcessar.length,
+        disponiveis: viaturasParaProcessar.filter(v => v.status === 'disponivel').length,
+        emServico: viaturasParaProcessar.filter(v => v.status === 'em_servico').length,
+        baixadas: viaturasParaProcessar.filter(v => v.status === 'baixada').length
+      };
+      const periodo = p === 'semanal' ? 'Últimos 7 dias' : p === 'mensal' ? 'Últimos 30 dias' : p === 'personalizado'
+        ? `${filtroDataInicio ? new Date(`${filtroDataInicio}T12:00:00`).toLocaleDateString('pt-BR') : 'Início'} a ${filtroDataFim ? new Date(`${filtroDataFim}T12:00:00`).toLocaleDateString('pt-BR') : 'Hoje'}`
+        : 'Todo o histórico';
 
       setRelatorioBI({
         stats,
         resumoGeral: { totalKm: gTotalKm, totalTurnos: gTotalTurnos, totalAlertas: gTotalAlertas, totalBaixas: gTotalBaixas },
-        kmDiario
+        kmDiario,
+        periodo,
+        frota
       });
 
     } catch (error) {
@@ -477,10 +497,10 @@ export default function Admin() {
     csv += `Total de Baixas Admin;${resumoGeral.totalBaixas}\n\n`;
 
     csv += "DADOS POR VIATURA\n";
-    csv += "Prefixo;KM Total;Turnos;Media KM/Turno;Relatos Defeito;Baixas P4;Saude (%)\n";
+    csv += "Prefixo;Situação Atual;KM Total;Turnos;Média KM/Turno;Relatos de Defeito;Baixas Administrativas;Ocorrências/100 Turnos\n";
 
     stats.forEach(s => {
-      csv += `${s.prefixo};${s.kmTotal};${s.turnos};${s.kmMedio};${s.relatosMotorista};${s.baixasAdmin};${s.scoreSaude}%\n`;
+      csv += `${s.prefixo};${s.statusAtual};${s.kmTotal};${s.turnos};${s.kmMedio};${s.relatosMotorista};${s.baixasAdmin};${s.taxaOcorrencias}\n`;
     });
 
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -2335,13 +2355,13 @@ export default function Admin() {
       )}
 
       {viewMode === 'relatorios' && (
-        <div className="fade-in">
-          <div className="flex-between" style={{ marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
+        <div className="fade-in bi-dashboard">
+          <div className="flex-between bi-header" style={{ flexWrap: 'wrap', gap: '1rem' }}>
             <div>
               <h3 style={{ fontSize: '1.5rem' }}>Relatórios Estratégicos & BI</h3>
-              <p className="text-muted">Análise de performance, prontidão e conformidade da frota</p>
+              <p className="text-muted">Indicadores auditáveis de utilização, ocorrências e situação atual da frota</p>
             </div>
-            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+            <div className="bi-toolbar">
               <button className="btn btn-secondary" style={{ width: 'auto' }} onClick={() => setModalRelatorioExecutivo(true)}>
                 <BookOpen size={18} /> Relatório Executivo
               </button>
@@ -2352,13 +2372,13 @@ export default function Admin() {
           </div>
 
           {/* Painel de Filtros Avançados & BI */}
-          <div className="card" style={{ padding: '1.25rem', marginBottom: '1.5rem', border: '1px solid var(--border-color)', borderRadius: '16px', backgroundColor: 'var(--card-bg)' }}>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'flex-end', justifyContent: 'space-between' }}>
+          <div className="card bi-filter-panel">
+            <div className="bi-filter-controls">
 
               {/* Seletor de Período Preset */}
               <div style={{ flex: '1 1 240px', textAlign: 'left' }}>
                 <label className="form-label" style={{ fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase', marginBottom: '6px', color: 'var(--text-muted)' }}>Período</label>
-                <div style={{ display: 'flex', gap: '4px', backgroundColor: 'var(--input-bg)', padding: '4px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                <div className="bi-period-selector">
                   <button
                     type="button"
                     style={{ flex: 1, padding: '8px 12px', borderRadius: '6px', fontSize: '0.75rem', border: 'none', cursor: 'pointer', backgroundColor: filtroTempo === 'semanal' ? 'var(--bm-green)' : 'transparent', color: filtroTempo === 'semanal' ? 'white' : 'var(--text-muted)', fontWeight: filtroTempo === 'semanal' ? 600 : 400, transition: 'all 0.2s ease' }}
@@ -2444,17 +2464,17 @@ export default function Admin() {
             </div>
           </div>
 
-          <div className="dashboard-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
-            <div className="stat-card" style={{ borderTop: '4px solid var(--bm-gold)' }}><div className="stat-icon" style={{ backgroundColor: 'rgba(197,160,89,0.1)' }}><Gauge size={24} color="var(--bm-gold)" /></div><div className="stat-info"><h4>Distância Frota</h4><p>{relatorioBI.resumoGeral.totalKm} KM</p></div></div>
-            <div className="stat-card" style={{ borderTop: '4px solid #3b82f6' }}><div className="stat-icon" style={{ backgroundColor: 'rgba(59,130,246,0.1)' }}><Zap size={24} color="#3b82f6" /></div><div className="stat-info"><h4>Total Turnos</h4><p>{relatorioBI.resumoGeral.totalTurnos}</p></div></div>
-            <div className="stat-card" style={{ borderTop: '4px solid #ef4444' }}><div className="stat-icon" style={{ backgroundColor: 'rgba(239,68,68,0.1)' }}><AlertTriangle size={24} color="#ef4444" /></div><div className="stat-info"><h4>Defeitos Relatados</h4><p>{relatorioBI.resumoGeral.totalAlertas}</p></div></div>
-            <div className="stat-card" style={{ borderTop: '4px solid #f59e0b' }}><div className="stat-icon" style={{ backgroundColor: 'rgba(245,158,11,0.1)' }}><ShieldAlert size={24} color="#f59e0b" /></div><div className="stat-info"><h4>Baixas Operacionais</h4><p>{relatorioBI.resumoGeral.totalBaixas}</p></div></div>
+          <div className="dashboard-grid bi-metrics">
+            <div className="stat-card bi-metric" style={{ borderTop: '4px solid var(--bm-gold)' }}><div className="stat-icon" style={{ backgroundColor: 'rgba(197,160,89,0.1)' }}><Gauge size={24} color="var(--bm-gold)" /></div><div className="stat-info"><h4>KM rodados</h4><p>{relatorioBI.resumoGeral.totalKm.toLocaleString('pt-BR')} <span>km</span></p><small className="text-muted">{relatorioBI.periodo}</small></div></div>
+            <div className="stat-card bi-metric" style={{ borderTop: '4px solid #3b82f6' }}><div className="stat-icon" style={{ backgroundColor: 'rgba(59,130,246,0.1)' }}><Zap size={24} color="#3b82f6" /></div><div className="stat-info"><h4>Turnos operacionais</h4><p>{relatorioBI.resumoGeral.totalTurnos}</p><small className="text-muted">sem deslocamentos administrativos</small></div></div>
+            <div className="stat-card bi-metric" style={{ borderTop: '4px solid #ef4444' }}><div className="stat-icon" style={{ backgroundColor: 'rgba(239,68,68,0.1)' }}><AlertTriangle size={24} color="#ef4444" /></div><div className="stat-info"><h4>Ocorrências registradas</h4><p>{relatorioBI.resumoGeral.totalAlertas + relatorioBI.resumoGeral.totalBaixas}</p><small className="text-muted">{relatorioBI.resumoGeral.totalAlertas} relatos · {relatorioBI.resumoGeral.totalBaixas} baixas</small></div></div>
+            <div className="stat-card bi-metric" style={{ borderTop: '4px solid #10b981' }}><div className="stat-icon" style={{ backgroundColor: 'rgba(16,185,129,0.1)' }}><ShieldCheck size={24} color="#10b981" /></div><div className="stat-info"><h4>Frota disponível agora</h4><p>{relatorioBI.frota.disponiveis} <span>/ {relatorioBI.frota.total}</span></p><small className="text-muted">{relatorioBI.frota.emServico} em serviço · {relatorioBI.frota.baixadas} baixadas</small></div></div>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.5rem', marginBottom: '1.5rem' }}>
-            <div className="card">
-              <h4 style={{ marginBottom: '1rem', color: 'var(--bm-green)' }}>Tendência de Quilometragem Rodada</h4>
-              <p className="text-muted" style={{ marginBottom: '1rem' }}>KM total rodado pelos serviços da CIA por dia</p>
+          <div className="bi-charts">
+            <div className="card bi-chart-card">
+              <h4 style={{ marginBottom: '1rem', color: 'var(--bm-green)' }}>Quilometragem por dia</h4>
+              <p className="text-muted" style={{ marginBottom: '1rem' }}>Últimos 15 dias com serviços encerrados no período filtrado</p>
               <div style={{ height: '260px' }}>
                 {relatorioBI.kmDiario && relatorioBI.kmDiario.length > 0 ? (
                   <ResponsiveContainer width="100%" height="100%">
@@ -2478,8 +2498,8 @@ export default function Admin() {
               </div>
             </div>
 
-            <div className="card">
-              <h4 style={{ marginBottom: '1.5rem', color: 'var(--bm-green)' }}>Uso por Viatura (KM Rodados)</h4>
+            <div className="card bi-chart-card">
+              <h4 style={{ marginBottom: '1.5rem', color: 'var(--bm-green)' }}>Uso por viatura</h4>
               <div style={{ height: '260px' }}>
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={relatorioBI.stats}>
@@ -2494,36 +2514,27 @@ export default function Admin() {
             </div>
           </div>
 
-          <h3 style={{ marginBottom: '1rem' }}>Estatísticas Individuais</h3>
-          <div className="responsive-grid">
-            {relatorioBI.stats.map(s => (
-              <div key={s.prefixo} className="card" style={{ position: 'relative', overflow: 'hidden', borderTop: '4px solid var(--border-color)' }}>
-                <div style={{ position: 'absolute', top: 0, right: 0, width: '4px', height: '100%', backgroundColor: Number(s.uptime) > 90 ? 'var(--status-available)' : Number(s.uptime) > 75 ? 'var(--status-warning)' : 'var(--status-alteration)' }}></div>
-                <div className="flex-between">
-                  <h3>VTR {s.prefixo}</h3>
-                  <span style={{ fontWeight: 700, color: Number(s.uptime) > 90 ? 'var(--status-available)' : 'var(--status-alteration)' }}>
-                    Disponibilidade: {s.uptime}%
-                  </span>
-                </div>
-
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginTop: '1rem' }}>
-                  <div><p className="text-muted" style={{ fontSize: '0.75rem' }}>KM TOTAL</p><strong>{s.kmTotal} km</strong></div>
-                  <div><p className="text-muted" style={{ fontSize: '0.75rem' }}>TURNOS</p><strong>{s.turnos}</strong></div>
-                  <div><p className="text-muted" style={{ fontSize: '0.75rem' }}>MÉDIA/TURNO</p><strong>{s.kmMedio} km</strong></div>
-                  <div><p className="text-muted" style={{ fontSize: '0.75rem' }}>DEFEITOS</p><strong style={{ color: s.relatosMotorista > 0 ? 'red' : 'inherit' }}>{s.relatosMotorista}</strong></div>
-                </div>
-
-                <div style={{ marginTop: '1.2rem' }}>
-                  <div className="flex-between" style={{ marginBottom: '4px' }}>
-                    <span className="text-muted" style={{ fontSize: '0.75rem' }}>Saúde do Veículo: <strong>{s.scoreSaude}%</strong></span>
-                    <span className="text-muted" style={{ fontSize: '0.75rem' }}>Baixas: <strong>{s.baixasAdmin}</strong></span>
-                  </div>
-                  <div style={{ height: '6px', background: 'var(--hover-bg)', borderRadius: '3px', overflow: 'hidden' }}>
-                    <div style={{ width: `${s.scoreSaude}%`, height: '100%', background: s.scoreSaude > 80 ? 'var(--status-available)' : s.scoreSaude > 50 ? 'var(--status-warning)' : 'var(--status-alteration)', transition: 'width 1s' }}></div>
-                  </div>
-                </div>
-              </div>
-            ))}
+          <div className="card table-wrapper bi-table" style={{ padding: 0, overflow: 'hidden' }}>
+            <div className="flex-between bi-table-header" style={{ flexWrap: 'wrap', gap: '0.5rem' }}>
+              <div><h3 style={{ margin: 0 }}>Detalhamento por viatura</h3><p className="text-muted" style={{ margin: '0.25rem 0 0', fontSize: '0.85rem' }}>Dados consolidados para o período selecionado</p></div>
+              <span className="text-muted" style={{ fontSize: '0.8rem' }}>{relatorioBI.stats.length} viatura(s)</span>
+            </div>
+            <table className="table">
+              <thead><tr><th>Viatura</th><th>Situação atual</th><th>KM rodados</th><th>Turnos</th><th>Média/turno</th><th>Ocorrências</th><th>Ocorrências / 100 turnos</th></tr></thead>
+              <tbody>
+                {relatorioBI.stats.length > 0 ? relatorioBI.stats.map(s => {
+                  const statusCor = s.statusAtual === 'disponivel' ? 'var(--status-available)' : s.statusAtual === 'em_servico' ? 'var(--status-inservice)' : 'var(--status-warning)';
+                  const statusTexto = s.statusAtual === 'disponivel' ? 'Disponível' : s.statusAtual === 'em_servico' ? 'Em serviço' : s.statusAtual === 'baixada' ? 'Baixada' : 'Sem status';
+                  return <tr key={s.prefixo}>
+                    <td><strong>VTR {s.prefixo}</strong></td>
+                    <td><span style={{ color: statusCor, fontWeight: 700, textTransform: 'capitalize' }}>{statusTexto}</span></td>
+                    <td>{Number(s.kmTotal).toLocaleString('pt-BR')} km</td><td>{s.turnos}</td><td>{s.kmMedio} km</td>
+                    <td style={{ color: s.ocorrencias > 0 ? 'var(--status-alteration)' : 'inherit', fontWeight: s.ocorrencias > 0 ? 700 : 400 }}>{s.ocorrencias}</td>
+                    <td>{s.taxaOcorrencias}</td>
+                  </tr>;
+                }) : <tr><td colSpan="7" style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}>Nenhuma viatura encontrada para os filtros selecionados.</td></tr>}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
