@@ -1172,7 +1172,7 @@ export default function Viatura() {
                   rows="2"
                   value={motivoLiberacaoManutencao}
                   onChange={(e) => setMotivoLiberacaoManutencao(e.target.value)}
-                  placeholder="Ex: Viatura liberada da oficina com reparo concluído, autorização da chefia..."
+                  placeholder="Ex: Viatura liberada da oficina com reparo concluído, autorização do P4..."
                   style={{ resize: 'vertical' }}
                 />
                 <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px', margin: 0 }}>
