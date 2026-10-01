@@ -134,6 +134,7 @@ export default function Viatura() {
   const [fotoAlteracaoInicial, setFotoAlteracaoInicial] = useState(null);
   const [matricula, setMatricula] = useState('');
   const [tentouSubmeter, setTentouSubmeter] = useState(false);
+  const [motivoLiberacaoManutencao, setMotivoLiberacaoManutencao] = useState('');
 
   // Estados Form Finalização
   const [kmFinal, setKmFinal] = useState('');
@@ -141,6 +142,7 @@ export default function Viatura() {
   const [descAlteracao, setDescAlteracao] = useState('');
   const [fotoAlteracaoFinal, setFotoAlteracaoFinal] = useState(null);
   const [matriculaConfirmacao, setMatriculaConfirmacao] = useState('');
+  const [motivoFinalizacaoOutroMilitar, setMotivoFinalizacaoOutroMilitar] = useState('');
 
   const showAlert = (title, message, type, onConfirm = null) => {
     setModalAlert({
@@ -155,9 +157,11 @@ export default function Viatura() {
     if (meUser) {
       setMotorista(`${meUser.graduacao} ${meUser.nome}`);
       setMatricula(meUser.matricula);
+      setMatriculaConfirmacao(meUser.matricula);
     } else {
       setMotorista('');
       setMatricula('');
+      setMatriculaConfirmacao('');
     }
   }, [meUser]);
 
@@ -516,7 +520,7 @@ export default function Viatura() {
       const q = query(collection(db, 'viaturas'), orderBy('prefixo'));
       const unsubscribe = onSnapshot(q, (snapshot) => {
         const vtrs = [];
-        snapshot.forEach(doc => vtrs.push({ id: doc.id, ...doc.data() }));
+        snapshot.forEach(doc => vtrs.push({ ...doc.data(), id: doc.id, prefixo: doc.data().prefixo || doc.id }));
         setListaViaturas(vtrs);
         setLoading(false);
         if (!loggedRef.current) {
@@ -533,7 +537,7 @@ export default function Viatura() {
           const docSnap = await getDoc(docRef);
 
           if (docSnap.exists()) {
-            setViatura({ id: docSnap.id, ...docSnap.data() });
+            setViatura({ ...docSnap.data(), id: docSnap.id, prefixo: docSnap.data().prefixo || docSnap.id });
             if (!loggedRef.current) {
               registrarAcao('Visualizou Página VTR');
               loggedRef.current = true;
@@ -575,7 +579,7 @@ export default function Viatura() {
   }, [prefixo]);
 
   useEffect(() => {
-    if (viatura && viatura.status === 'disponivel') {
+    if (viatura && (viatura.status === 'disponivel' || viatura.status === 'baixada')) {
       setKmInicial(viatura.km_atual || 0);
     }
   }, [viatura]);
@@ -598,6 +602,12 @@ export default function Viatura() {
       return;
     }
 
+    if (viatura?.status === 'baixada' && !motivoLiberacaoManutencao.trim()) {
+      setTentouSubmeter(true);
+      showAlert("Motivo Obrigatório", "Como a viatura está baixada, informe obrigatoriamente o motivo da liberação do estado de manutenção.", "warning");
+      return;
+    }
+
     if (temAlteracaoInicial && !descAlteracaoInicial.trim()) {
       setTentouSubmeter(true);
       showAlert("Descrição Obrigatória", "Você marcou que identificou uma alteração. Por favor, descreva o problema.", "warning");
@@ -615,6 +625,8 @@ export default function Viatura() {
 
     try {
       const loc = await obterLocalizacao();
+      const isBaixada = viatura?.status === 'baixada';
+      const motivoLib = motivoLiberacaoManutencao.trim();
 
       const servicoData = {
         prefixo_vtr: prefixo,
@@ -626,7 +638,8 @@ export default function Viatura() {
         alteracao_inicial: temAlteracaoInicial ? descAlteracaoInicial : null,
         matricula_assuncao: matricula,
         hora_inicial: serverTimestamp(),
-        timestamp: serverTimestamp()
+        timestamp: serverTimestamp(),
+        ...(isBaixada ? { assumida_de_baixada: true, motivo_liberacao_manutencao: motivoLib } : {})
       };
 
       if (kmTrocaInformado) {
@@ -651,11 +664,24 @@ export default function Viatura() {
       }
       await updateDoc(doc(db, 'viaturas', prefixo), dadosViatura);
 
+      if (isBaixada) {
+        await addDoc(collection(db, 'manutencoes'), {
+          prefixo_vtr: prefixo,
+          descricao: `[LIBERAÇÃO OPERACIONAL DA BAIXA] ${motivoLib}`,
+          origem: 'Assunção Operacional',
+          status: 'resolvida',
+          data_relato: serverTimestamp(),
+          relatado_por: motorista || matricula,
+          servico_id: servicoRef.id,
+          silencioso: false
+        });
+      }
+
       if (temAlteracaoInicial) {
         await criarTicketManutencao(descAlteracaoInicial, 'Assunção', servicoRef.id, fotoAlteracaoInicial);
       }
 
-      await registrarAcao('Iniciou Turno');
+      await registrarAcao(isBaixada ? `Iniciou Turno (Liberou VTR Baixada: ${motivoLib})` : 'Iniciou Turno');
 
       // Notificação via WhatsApp (Evolution API)
       try {
@@ -668,6 +694,7 @@ export default function Viatura() {
 
             const msg = `🔔 *VTR SaaS - Início de Serviço* 🔔\n\n` +
               `*Viatura:* VTR ${prefixo}\n` +
+              (isBaixada ? `*STATUS ANTERIOR:* BAIXADA (Liberada agora)\n*MOTIVO DA LIBERAÇÃO:* ${motivoLib}\n` : '') +
               `*Motorista:* ${motorista}\n` +
               `*Matrícula:* ${matricula}\n` +
               `*Patrulheiro:* ${patrulheiro || 'Nenhum'}\n` +
@@ -722,8 +749,14 @@ export default function Viatura() {
         return;
       }
 
-      if (matriculaConfirmacao !== viatura.matricula_ativa) {
-        showAlert("Matrícula Incorreta", "A matrícula informada não confere com quem assumiu a VTR.", "danger");
+      const ehOutroMilitar = Boolean(viatura.matricula_ativa && matriculaConfirmacao !== viatura.matricula_ativa);
+
+      if (ehOutroMilitar && !motivoFinalizacaoOutroMilitar.trim()) {
+        showAlert(
+          "Motivo Obrigatório",
+          `A matrícula informada (${matriculaConfirmacao}) é diferente do militar que assumiu a VTR (${viatura.matricula_ativa}). Por favor, informe o motivo do encerramento (ex: militar anterior esqueceu de encerrar o turno).`,
+          "warning"
+        );
         setSubmitting(false);
         return;
       }
@@ -741,7 +774,14 @@ export default function Viatura() {
         km_final: Number(kmFinal),
         hora_final: serverTimestamp(),
         com_alteracao: comAlteracao,
-        descricao_alteracao: comAlteracao ? descAlteracao : null
+        descricao_alteracao: comAlteracao ? descAlteracao : null,
+        finalizado_por_matricula: matriculaConfirmacao,
+        finalizado_por_nome: meUser ? `${meUser.graduacao} ${meUser.nome}` : (motorista || 'Desconhecido'),
+        ...(ehOutroMilitar ? {
+          encerrado_por_outro_militar: true,
+          matricula_assuncao_original: viatura.matricula_ativa,
+          motivo_encerramento_outro_militar: motivoFinalizacaoOutroMilitar.trim()
+        } : {})
       };
 
       if (loc.lat && loc.lng) {
@@ -762,7 +802,7 @@ export default function Viatura() {
         await criarTicketManutencao(descAlteracao, 'Finalização', viatura.servico_atual_id, fotoAlteracaoFinal);
       }
 
-      await registrarAcao('Finalizou Turno');
+      await registrarAcao(ehOutroMilitar ? `Finalizou Turno de Outro Militar (${viatura.matricula_ativa}): ${motivoFinalizacaoOutroMilitar.trim()}` : 'Finalizou Turno');
 
       // Notificação via WhatsApp (Evolution API)
       try {
@@ -779,6 +819,7 @@ export default function Viatura() {
 
             const msg = `🔔 *VTR SaaS - Fim de Serviço* 🔔\n\n` +
               `*Viatura:* VTR ${prefixo}\n` +
+              (ehOutroMilitar ? `⚠️ *ENCERRADO POR OUTRO MILITAR:*\n> *Responsável:* ${motoristaNomeFinal} (${matriculaConfirmacao})\n> *Matrícula Anterior:* ${viatura.matricula_ativa}\n> *Motivo:* ${motivoFinalizacaoOutroMilitar.trim()}\n\n` : '') +
               `*Motorista:* ${motoristaNomeFinal}\n` +
               `*Matrícula:* ${matriculaConfirmacao}\n` +
               `*KM Final:* ${kmFinal} km\n` +
@@ -810,8 +851,28 @@ export default function Viatura() {
         console.warn("Erro ao processar notificação de WhatsApp:", waErr);
       }
 
-      showAlert("Finalizado!", "Turno encerrado com sucesso. Bom descanso!", "success", () => {
-        finalizarSessaoAposOperacao();
+      const msgSucesso = ehOutroMilitar
+        ? "Turno anterior encerrado com sucesso! A viatura agora está liberada para você realizar a sua assunção."
+        : "Turno encerrado com sucesso. Bom descanso!";
+
+      showAlert("Finalizado!", msgSucesso, "success", () => {
+        if (ehOutroMilitar) {
+          setKmFinal('');
+          setComAlteracao(false);
+          setDescAlteracao('');
+          setFotoAlteracaoFinal(null);
+          setMotivoFinalizacaoOutroMilitar('');
+          setViatura(prev => ({
+            ...prev,
+            status: 'disponivel',
+            km_atual: Number(kmFinal),
+            servico_atual_id: null,
+            matricula_ativa: null
+          }));
+          setSubmitting(false);
+        } else {
+          finalizarSessaoAposOperacao();
+        }
       });
     } catch (err) {
       console.error(err);
@@ -1035,15 +1096,15 @@ export default function Viatura() {
         <div className="grid-list">
           {listaViaturas.map(vtr => (
             vtr.status === 'baixada' ? (
-              <div key={vtr.id} className="vtr-list-item card" style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderLeft: `6px solid #f59e0b` }} onClick={() => showAlert("Viatura Baixada", `A VTR ${vtr.prefixo} está indisponível para assunção até liberação no painel administrativo.`, "warning")}>
+              <Link key={vtr.id} to={`/vtr/${vtr.prefixo}`} className="vtr-list-item card" style={{ textDecoration: 'none', color: 'inherit', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderLeft: `6px solid #f59e0b` }}>
                 <div>
                   <h3 style={{ margin: 0 }}>VTR {vtr.prefixo}</h3>
-                  <span className="badge badge-alert" style={{ marginTop: '4px', display: 'inline-block' }}>
-                    Baixada
+                  <span className="badge" style={{ backgroundColor: 'rgba(245, 158, 11, 0.15)', color: '#b45309', marginTop: '4px', display: 'inline-block' }}>
+                    Baixada (Requer Liberação)
                   </span>
                 </div>
-                <AlertTriangle size={20} color="var(--status-warning)" />
-              </div>
+                <ChevronRight size={20} color="var(--text-muted)" />
+              </Link>
             ) : (
               <Link key={vtr.id} to={`/vtr/${vtr.prefixo}`} className="vtr-list-item card" style={{ textDecoration: 'none', color: 'inherit', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderLeft: `6px solid ${vtr.status === 'disponivel' ? '#10b981' : '#3b82f6'}` }}>
                 <div>
@@ -1061,25 +1122,6 @@ export default function Viatura() {
     );
   }
 
-
-  // Caso a VTR esteja BAIXADA
-  if (viatura.status === 'baixada') {
-    return (
-      <div className="fade-in container" style={{ maxWidth: '600px' }}>
-        <div className="card" style={{ textAlign: 'center', backgroundColor: '#f59e0b', color: 'white', border: 'none' }}>
-          <AlertTriangle size={48} style={{ margin: '0 auto 0.5rem' }} />
-          <h2 style={{ color: 'white', margin: 0 }}>VTR {prefixo} BAIXADA</h2>
-          <p style={{ opacity: 0.9, marginTop: '0.5rem' }}>Indisponível para operação no momento.</p>
-        </div>
-        <div className="card" style={{ textAlign: 'center' }}>
-          <p>Esta viatura foi marcada como <strong>BAIXADA</strong> pelo administrador ou P4.</p>
-          <p className="text-muted" style={{ fontSize: '0.9rem', marginTop: '1rem' }}>Favor utilizar outra viatura disponível na frota.</p>
-          <button onClick={() => navigate('/vtr')} className="btn btn-primary" style={{ marginTop: '1.5rem' }}>Voltar para Lista</button>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="fade-in container" style={{ maxWidth: '700px' }}>
       {/* Modal de Alerta Customizado */}
@@ -1091,22 +1133,53 @@ export default function Viatura() {
         onConfirm={modalAlert.onConfirm}
       />
 
-      <div className="card" style={{ textAlign: 'center', backgroundColor: 'var(--bm-green)', color: 'white', border: 'none' }}>
+      <div className="card" style={{ textAlign: 'center', backgroundColor: viatura?.status === 'baixada' ? '#d97706' : 'var(--bm-green)', color: 'white', border: 'none' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <button onClick={() => navigate('/vtr')} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer' }} title="Lista de VTRs"><List size={20} /></button>
           <Car size={48} color="var(--bm-gold)" />
           <button onClick={handleLogoutMe} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer' }} title="Sair da Conta ME"><LogOut size={20} /></button>
         </div>
         <h2 style={{ color: 'white', margin: 0, fontSize: '2rem' }}>VTR {prefixo}</h2>
-          <p style={{ opacity: 0.9, marginTop: '0.5rem' }}>
-            Status: {viatura && viatura.status === 'disponivel' ? 'Disponível' : viatura ? viatura.status : 'Carregando...'}
-          </p>
+        <p style={{ opacity: 0.9, marginTop: '0.5rem' }}>
+          Status: {viatura?.status === 'disponivel' ? 'Disponível' : viatura?.status === 'em_servico' ? 'Em Uso' : viatura?.status === 'baixada' ? 'Baixada (Em Manutenção)' : 'Carregando...'}
+        </p>
       </div>
 
-      {viatura.status === 'disponivel' ? (
+      {viatura?.status !== 'em_servico' ? (
         <div className="card">
-          <h3 style={{ marginBottom: '1.5rem', textAlign: 'center' }}>Assunção de Viatura</h3>
+          <h3 style={{ marginBottom: '1.5rem', textAlign: 'center' }}>
+            {viatura?.status === 'baixada' ? 'Assunção com Liberação de Viatura' : 'Assunção de Viatura'}
+          </h3>
+          {viatura?.status === 'baixada' && (
+            <div style={{ backgroundColor: 'rgba(245, 158, 11, 0.15)', border: '1px solid #f59e0b', borderRadius: '8px', padding: '1rem', marginBottom: '1.25rem', textAlign: 'left' }}>
+              <h4 style={{ color: '#b45309', margin: '0 0 0.5rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <AlertTriangle size={20} /> Viatura Baixada / Em Manutenção
+              </h4>
+              <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-main)', lineHeight: 1.4 }}>
+                Esta viatura encontra-se com status <strong>BAIXADA</strong>. Para colocá-la em operação de serviço, informe obrigatoriamente abaixo o motivo da liberação do estado de manutenção.
+              </p>
+            </div>
+          )}
           <form onSubmit={handleIniciarServico}>
+            {viatura?.status === 'baixada' && (
+              <div className="form-group" style={{ backgroundColor: 'rgba(245, 158, 11, 0.08)', padding: '1rem', borderRadius: '8px', border: '1px solid rgba(245, 158, 11, 0.4)', marginBottom: '1.5rem', textAlign: 'left' }}>
+                <label className="form-label" style={{ color: '#b45309', fontWeight: 'bold' }}>
+                  Motivo da Liberação da VTR <span style={{ color: 'red' }}>*</span>
+                </label>
+                <textarea
+                  className="form-input"
+                  required
+                  rows="2"
+                  value={motivoLiberacaoManutencao}
+                  onChange={(e) => setMotivoLiberacaoManutencao(e.target.value)}
+                  placeholder="Ex: Viatura liberada da oficina com reparo concluído, autorização da chefia..."
+                  style={{ resize: 'vertical' }}
+                />
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px', margin: 0 }}>
+                  Justificativa obrigatória para retirar a viatura do status baixada e assumir o turno.
+                </p>
+              </div>
+            )}
             <div className="responsive-grid" style={{ marginBottom: '1.5rem' }}>
               <div className="form-group">
                 <label className="form-label">Motorista (Logado)</label>
@@ -1277,10 +1350,37 @@ export default function Viatura() {
                 placeholder="Informe sua matrícula para desativar"
                 style={{ textAlign: 'center', letterSpacing: '4px', fontWeight: 'bold' }}
               />
-              <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '8px', textAlign: 'center' }}>
-                Digite os 7 números da matrícula usada na ativação.
+              <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '8px', textAlign: 'center' }}>
+                {viatura.matricula_ativa
+                  ? `Viatura em serviço sob responsabilidade da matrícula: ${viatura.matricula_ativa}`
+                  : 'Digite os 7 números da matrícula funcional.'}
               </p>
             </div>
+
+            {viatura.matricula_ativa && matriculaConfirmacao && matriculaConfirmacao !== viatura.matricula_ativa && (
+              <div style={{ backgroundColor: 'rgba(234, 179, 8, 0.12)', border: '1px solid #eab308', borderRadius: '8px', padding: '1rem', marginBottom: '1.5rem', textAlign: 'left' }}>
+                <h4 style={{ color: '#b45309', margin: '0 0 0.5rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <AlertCircle size={20} /> Finalização de Turno por Outro Militar
+                </h4>
+                <p style={{ margin: '0 0 0.75rem', fontSize: '0.85rem', color: 'var(--text-main)', lineHeight: 1.4 }}>
+                  A viatura foi assumida pela matrícula <strong>{viatura.matricula_ativa}</strong>. Se o militar anterior esqueceu de encerrar o turno, informe o motivo abaixo para proceder com o encerramento e liberar a viatura para a sua guarnição.
+                </p>
+                <div className="form-group" style={{ margin: 0 }}>
+                  <label className="form-label" style={{ color: '#b45309', fontWeight: 'bold' }}>
+                    Motivo do Encerramento <span style={{ color: 'red' }}>*</span>
+                  </label>
+                  <textarea
+                    className="form-input"
+                    rows="2"
+                    required
+                    value={motivoFinalizacaoOutroMilitar}
+                    onChange={(e) => setMotivoFinalizacaoOutroMilitar(e.target.value)}
+                    placeholder="Ex: Militar anterior esqueceu de encerrar o turno ao término do serviço; rendição de guarnição..."
+                    style={{ resize: 'vertical' }}
+                  />
+                </div>
+              </div>
+            )}
 
             <div className="form-group" style={{ backgroundColor: 'var(--hover-bg)', padding: '1rem', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
               <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap', alignItems: 'center' }}>

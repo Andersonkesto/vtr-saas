@@ -167,7 +167,7 @@ export default function Admin() {
     const qVtr = query(collection(db, 'viaturas'), orderBy('prefixo'));
     const unsubscribeVtr = onSnapshot(qVtr, (snapshot) => {
       const vtrs = [];
-      snapshot.forEach((doc) => vtrs.push({ id: doc.id, ...doc.data() }));
+      snapshot.forEach((doc) => vtrs.push({ ...doc.data(), id: doc.id, prefixo: doc.data().prefixo || doc.id }));
       setViaturas(vtrs);
       setLoading(false);
     });
@@ -863,7 +863,8 @@ export default function Admin() {
     if (vtr.status === 'baixada') {
       showConfirm("Liberar Viatura", `A VTR ${vtr.prefixo} será liberada para uso normal.`, "info", async () => {
         try {
-          await updateDoc(doc(db, 'viaturas', vtr.id), { status: 'disponivel' });
+          const targetId = vtr.id || vtr.prefixo;
+          await updateDoc(doc(db, 'viaturas', targetId), { status: 'disponivel' });
           await registrarAuditoria('LIBERAR_VIATURA', { prefixo: vtr.prefixo });
         } catch (e) { console.error(e); }
       });
@@ -878,7 +879,8 @@ export default function Admin() {
     if (!motivoBaixa.trim() || baixando) return;
     setBaixando(true);
     try {
-      await updateDoc(doc(db, 'viaturas', vtrBaixaModal.id), { status: 'baixada' });
+      const targetId = vtrBaixaModal.id || vtrBaixaModal.prefixo;
+      await updateDoc(doc(db, 'viaturas', targetId), { status: 'baixada' });
       await addDoc(collection(db, 'manutencoes'), {
         prefixo_vtr: vtrBaixaModal.prefixo,
         descricao: `[BAIXA ADMIN] ${motivoBaixa}`,
@@ -1176,16 +1178,17 @@ export default function Admin() {
 
       if (antigoId === 'NEW') {
         // Nova viatura
-        await setDoc(doc(db, 'viaturas', novoId), dados);
+        await setDoc(doc(db, 'viaturas', novoId), { ...dados, id: novoId });
         await registrarAuditoria('CADASTRAR_VIATURA', { prefixo: novoId, dados });
       } else if (novoId !== antigoId) {
         // Mudança de prefixo (ID)
-        await setDoc(doc(db, 'viaturas', novoId), { ...vtrParaEditar, ...dados });
+        const { id: _ignoredId, ...restVtr } = vtrParaEditar || {};
+        await setDoc(doc(db, 'viaturas', novoId), { ...restVtr, ...dados, id: novoId });
         await deleteDoc(doc(db, 'viaturas', antigoId));
         await registrarAuditoria('EDITAR_VIATURA_PREFIXO', { antigo: antigoId, novo: novoId, dados });
       } else {
         // Atualização simples
-        await updateDoc(doc(db, 'viaturas', antigoId), dados);
+        await updateDoc(doc(db, 'viaturas', antigoId), { ...dados, id: antigoId });
         await registrarAuditoria('EDITAR_VIATURA', { prefixo: antigoId, dados });
       }
       setVtrParaEditar(null);
@@ -2079,31 +2082,9 @@ export default function Admin() {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '1.25rem' }}>
                 <div><label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, display: 'block', textTransform: 'uppercase', marginBottom: '4px' }}>Placa</label><strong style={{ fontSize: '1rem' }}>{vtrPerfilModal.placa || '---'}</strong></div>
                 <div><label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, display: 'block', textTransform: 'uppercase', marginBottom: '4px' }}>Ano / Modelo</label><strong style={{ fontSize: '1rem' }}>{vtrPerfilModal.ano || '---'}</strong></div>
-                <div style={{ gridColumn: '1 / -1', background: 'var(--hover-bg, rgba(255,255,255,0.03))', padding: '0.75rem 1rem', borderRadius: '8px', border: '1px solid var(--border-color, rgba(255,255,255,0.1))', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
-                  <div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '4px' }}>
-                      <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', margin: 0 }}>Nº Cartão Abastecimento</label>
-                      <a href="https://www.ticketlog.com.br/" target="_blank" rel="noreferrer" style={{ fontSize: '0.65rem', color: 'var(--bm-gold, #eab308)', textDecoration: 'none', background: 'rgba(234,179,8,0.1)', padding: '1px 6px', borderRadius: '4px' }}>Consultar Ticket Log 🔗</a>
-                    </div>
-                    <strong style={{ fontSize: '1rem', letterSpacing: '0.5px' }}>{vtrPerfilModal.cartao_abastecimento || '---'}</strong>
-                  </div>
-                  {(vtrPerfilModal.saldo_cartao !== undefined || vtrPerfilModal.saldoCartao !== undefined) ? (
-                    <div style={{ background: 'rgba(34, 197, 94, 0.12)', border: '1px solid rgba(34, 197, 94, 0.3)', color: '#22c55e', padding: '0.4rem 0.8rem', borderRadius: '6px', textAlign: 'right' }}>
-                      <div style={{ fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 700, opacity: 0.9 }}>Saldo do Dia (Ticket Log)</div>
-                      <div style={{ fontSize: '1.1rem', fontWeight: 800 }}>R$ {vtrPerfilModal.saldo_cartao ?? vtrPerfilModal.saldoCartao}</div>
-                      <div style={{ fontSize: '0.7rem', fontWeight: 800, marginTop: '2px', color: getStatusSaldo(vtrPerfilModal).ok ? '#22c55e' : '#eab308' }}>{getStatusSaldo(vtrPerfilModal).label}</div>
-                      <div style={{ fontSize: '0.65rem', opacity: 0.8, marginTop: '2px' }}>
-                        {vtrPerfilModal.data_atualizacao_saldo || vtrPerfilModal.dataAtualizacaoSaldo ? `Atualizado: ${vtrPerfilModal.data_atualizacao_saldo || vtrPerfilModal.dataAtualizacaoSaldo}` : 'Atualização diária agendada'}
-                      </div>
-                    </div>
-                  ) : (
-                    <div style={{ background: 'rgba(234, 179, 8, 0.1)', border: '1px solid rgba(234, 179, 8, 0.25)', color: '#eab308', padding: '0.4rem 0.8rem', borderRadius: '6px', fontSize: '0.75rem', fontWeight: 600 }}>
-                      Saldo: Verificação Pendente
-                    </div>
-                  )}
-                  <button type="button" onClick={abrirEdicaoSaldoManual} className="btn btn-secondary" style={{ width: 'auto', padding: '0.45rem 0.65rem', fontSize: '0.75rem' }}>
-                    <Edit size={14} /> {vtrPerfilModal.saldo_cartao !== undefined || vtrPerfilModal.saldoCartao !== undefined ? 'Editar saldo manual' : 'Informar saldo manual'}
-                  </button>
+                <div style={{ gridColumn: '1 / -1', background: 'var(--hover-bg, rgba(255,255,255,0.03))', padding: '0.75rem 1rem', borderRadius: '8px', border: '1px solid var(--border-color, rgba(255,255,255,0.1))' }}>
+                  <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', marginBottom: '4px', display: 'block' }}>Nº Cartão Abastecimento</label>
+                  <strong style={{ fontSize: '1rem', letterSpacing: '0.5px' }}>{vtrPerfilModal.cartao_abastecimento || '---'}</strong>
                 </div>
                 <div><label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, display: 'block', textTransform: 'uppercase', marginBottom: '4px' }}>KM Atual</label><strong style={{ fontSize: '1rem' }}>{vtrPerfilModal.km_atual || 0} km</strong></div>
                 <div>
@@ -2305,7 +2286,6 @@ export default function Admin() {
                       <div className="fleet-card-meta">
                         <span>{vtr.km_atual || 0} km</span>
                         <span className={statusOleo.class}>{statusOleo.label}</span>
-                        <span style={{ color: statusSaldo.ok ? 'var(--status-available, #22c55e)' : 'var(--status-warning, #eab308)', fontWeight: 700 }}>{statusSaldo.label}</span>
                         <span className={statusRevisao?.class || ''}>{statusRevisao ? statusRevisao.label : 'Revisão ---'}</span>
                       </div>
                     </button>
