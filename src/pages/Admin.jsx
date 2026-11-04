@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Fragment } from 'react';
 import { collection, onSnapshot, doc, setDoc, query, orderBy, limit, getDocs, getDoc, where, deleteDoc, updateDoc, addDoc, serverTimestamp, Timestamp } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { hashPassword } from '../lib/security';
-import { PlusCircle, History, Car, AlertTriangle, QrCode, X, Edit, Settings, Trash2, Filter, Eye, Monitor, Smartphone, Activity, ClipboardCheck, Wrench, CheckCircle2, BarChart3, TrendingUp, ShieldCheck, MapPin, Download, ImageIcon, Maximize2, AlertCircle, ShieldAlert, Info, Gauge, Zap, Users, BookOpen } from 'lucide-react';
+import { PlusCircle, History, Car, AlertTriangle, QrCode, X, Edit, Settings, Trash2, Filter, Eye, Monitor, Smartphone, Activity, ClipboardCheck, Wrench, CheckCircle2, BarChart3, TrendingUp, ShieldCheck, MapPin, Download, ImageIcon, Maximize2, AlertCircle, ShieldAlert, Info, Gauge, Zap, Users, BookOpen, ChevronDown, ChevronUp, ChevronRight, Clock, User, Calendar, FileText, CheckCircle, Search, Printer } from 'lucide-react';
 import { QRCodeSVG, QRCodeCanvas } from 'qrcode.react';
 import { PieChart, Pie, Cell, Tooltip as RechartsTooltip, ResponsiveContainer, Legend, BarChart, Bar, XAxis, YAxis, CartesianGrid, LineChart, Line, AreaChart, Area } from 'recharts';
 
@@ -80,6 +80,9 @@ export default function Admin() {
     frota: { total: 0, disponiveis: 0, emServico: 0, baixadas: 0 }
   });
   const [modalRelatorioExecutivo, setModalRelatorioExecutivo] = useState(false);
+  const [viaturasExpandidasBI, setViaturasExpandidasBI] = useState({});
+  const [modalViaturaDetalhadaBI, setModalViaturaDetalhadaBI] = useState(null);
+  const [buscaTabelaBI, setBuscaTabelaBI] = useState('');
 
   // Estados para Logs de Auditoria P4
   const [auditLogs, setAuditLogs] = useState([]);
@@ -246,6 +249,186 @@ export default function Admin() {
     }
   };
 
+  const determinarTurno = (s) => {
+    const dt = s.hora_inicial?.toDate ? s.hora_inicial.toDate() : (s.timestamp?.toDate ? s.timestamp.toDate() : (s.hora_inicial?.seconds ? new Date(s.hora_inicial.seconds * 1000) : (s.timestamp?.seconds ? new Date(s.timestamp.seconds * 1000) : (s.hora_inicial ? new Date(s.hora_inicial) : null))));
+    if (!dt || isNaN(dt.getTime())) {
+      return {
+        nome: 'Não informado',
+        sigla: 'N/I',
+        horario: '-',
+        horaInicio: '-',
+        horaFim: '-',
+        dataStr: '-',
+        cor: 'var(--text-muted)',
+        bg: 'var(--hover-bg)'
+      };
+    }
+
+    const endDt = s.hora_final?.toDate ? s.hora_final.toDate() : (s.hora_final?.seconds ? new Date(s.hora_final.seconds * 1000) : (s.hora_final ? new Date(s.hora_final) : null));
+
+    const hora = dt.getHours();
+    const horaInicio = dt.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    const horaFim = endDt && !isNaN(endDt.getTime()) ? endDt.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : (s.hora_final ? 'Encerrado' : 'Em andamento');
+    const dataStr = dt.toLocaleDateString('pt-BR');
+
+    if (s.finalidade === 'Deslocamento Administrativo') {
+      return {
+        nome: 'Deslocamento Administrativo',
+        sigla: 'Administrativo',
+        tipo: 'adm',
+        horario: `${horaInicio} - ${horaFim}`,
+        horaInicio,
+        horaFim,
+        dataStr,
+        cor: '#4b5563',
+        bg: 'rgba(107, 114, 128, 0.15)'
+      };
+    }
+
+    let is12h = false;
+    if (endDt && !isNaN(endDt.getTime())) {
+      const diffHours = (endDt.getTime() - dt.getTime()) / (1000 * 60 * 60);
+      if (diffHours >= 8) is12h = true;
+    }
+
+    if (is12h) {
+      if (hora >= 5 && hora < 14) {
+        return {
+          nome: 'Turno 12h Diurno (07h às 19h)',
+          sigla: '12h Diurno',
+          tipo: '12h_diurno',
+          horario: `${horaInicio} - ${horaFim}`,
+          horaInicio,
+          horaFim,
+          dataStr,
+          cor: '#059669',
+          bg: 'rgba(16, 185, 129, 0.15)'
+        };
+      } else {
+        return {
+          nome: 'Turno 12h Noturno (19h às 07h)',
+          sigla: '12h Noturno',
+          tipo: '12h_noturno',
+          horario: `${horaInicio} - ${horaFim}`,
+          horaInicio,
+          horaFim,
+          dataStr,
+          cor: '#0284c7',
+          bg: 'rgba(2, 132, 199, 0.15)'
+        };
+      }
+    }
+
+    if (hora >= 6 && hora < 12) {
+      return {
+        nome: '1º Turno (Manhã: 06h às 12h)',
+        sigla: '1º Turno (Manhã)',
+        tipo: 'manha',
+        horario: `${horaInicio} - ${horaFim}`,
+        horaInicio,
+        horaFim,
+        dataStr,
+        cor: '#b45309',
+        bg: 'rgba(217, 119, 6, 0.15)'
+      };
+    } else if (hora >= 12 && hora < 18) {
+      return {
+        nome: '2º Turno (Tarde: 12h às 18h)',
+        sigla: '2º Turno (Tarde)',
+        tipo: 'tarde',
+        horario: `${horaInicio} - ${horaFim}`,
+        horaInicio,
+        horaFim,
+        dataStr,
+        cor: '#2563eb',
+        bg: 'rgba(37, 99, 235, 0.15)'
+      };
+    } else if (hora >= 18 && hora < 24) {
+      return {
+        nome: '3º Turno (Noite: 18h às 00h)',
+        sigla: '3º Turno (Noite)',
+        tipo: 'noite',
+        horario: `${horaInicio} - ${horaFim}`,
+        horaInicio,
+        horaFim,
+        dataStr,
+        cor: '#4f46e5',
+        bg: 'rgba(79, 70, 229, 0.15)'
+      };
+    } else {
+      return {
+        nome: '4º Turno (Madrugada: 00h às 06h)',
+        sigla: '4º Turno (Madrugada)',
+        tipo: 'madrugada',
+        horario: `${horaInicio} - ${horaFim}`,
+        horaInicio,
+        horaFim,
+        dataStr,
+        cor: '#7c3aed',
+        bg: 'rgba(124, 58, 237, 0.15)'
+      };
+    }
+  };
+
+  const alternarViaturaBI = (prefixo) => {
+    setViaturasExpandidasBI(prev => ({
+      ...prev,
+      [prefixo]: !prev[prefixo]
+    }));
+  };
+
+  const expandirTodasViaturasBI = (expandir = true) => {
+    if (!expandir) {
+      setViaturasExpandidasBI({});
+      return;
+    }
+    const todas = {};
+    (relatorioBI?.stats || []).forEach(s => {
+      todas[s.prefixo] = true;
+    });
+    setViaturasExpandidasBI(todas);
+  };
+
+  const exportarCSVViatura = (s) => {
+    if (!s || !s.servicos || s.servicos.length === 0) {
+      alert(`Nenhuma assunção registrada para a VTR ${s?.prefixo} no período selecionado.`);
+      return;
+    }
+
+    let csv = "\uFEFF";
+    csv += `RELATÓRIO DETALHADO DE ASSUNÇÕES - VTR ${s.prefixo}\n`;
+    csv += `Brigada Militar - 1ª Companhia / 46º BPM\n`;
+    csv += `Período: ${relatorioBI.periodo}\n`;
+    csv += `Data de Emissão: ${new Date().toLocaleString('pt-BR')}\n`;
+    csv += `KM Rodado no Período: ${s.kmTotal} km | Turnos: ${s.turnos} | Média KM/Turno: ${s.kmMedio} km | Ocorrências: ${s.ocorrencias}\n\n`;
+
+    csv += "Data Assunção;Hora Assunção;Turno;Motorista;Matrícula;Patrulheiro;Data/Hora Encerramento;KM Inicial;KM Final;KM Rodado;Finalidade;Alteração na Assunção;Alteração no Encerramento\n";
+
+    s.servicos.forEach(srv => {
+      const dtInicio = srv.turnoInfo?.dataStr || '-';
+      const hrInicio = srv.turnoInfo?.horaInicio || '-';
+      const turnoNome = srv.turnoInfo?.nome || '-';
+      const mot = (srv.motorista || '').replace(/;/g, ',');
+      const mat = (srv.matricula_assuncao || '').replace(/;/g, ',');
+      const pat = (srv.patrulheiro || '').replace(/;/g, ',');
+      const hrFim = srv.hora_final ? (srv.turnoInfo?.horaFim || formatarData(srv.hora_final)) : 'Em andamento';
+      const kmIni = srv.km_inicial ?? '';
+      const kmFin = srv.km_final ?? '';
+      const kmRod = srv.kmRodado ?? '';
+      const fin = (srv.finalidade || '').replace(/;/g, ',');
+      const altIni = (srv.alteracao_inicial || '').replace(/[\r\n;]+/g, ' ');
+      const altFim = (srv.alteracao_final || '').replace(/[\r\n;]+/g, ' ');
+
+      csv += `${dtInicio};${hrInicio};${turnoNome};${mot};${mat};${pat};${hrFim};${kmIni};${kmFin};${kmRod};${fin};${altIni};${altFim}\n`;
+    });
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `VTR_${s.prefixo}_ASSUNCOES_${new Date().toISOString().split('T')[0]}.csv`;
+    link.click();
+  };
+
   const carregarBI = async (periodoOverride = null) => {
     let p = filtroTempo;
     if (periodoOverride) {
@@ -283,7 +466,7 @@ export default function Admin() {
 
       const servicos = [];
       servSnapshot.forEach(doc => {
-        const data = doc.data();
+        const data = { id: doc.id, ...doc.data() };
         const ts = data.timestamp?.seconds || data.hora_inicial?.seconds || 0;
         if (ts >= startSecs && ts <= endSecs) {
           if (!filtroVtrBI || data.prefixo_vtr === filtroVtrBI) {
@@ -294,7 +477,7 @@ export default function Admin() {
 
       const manutencoes = [];
       manSnapshot.forEach(doc => {
-        const data = doc.data();
+        const data = { id: doc.id, ...doc.data() };
         const ts = data.data_relato?.seconds || 0;
         if (ts >= startSecs && ts <= endSecs) {
           if (!filtroVtrBI || data.prefixo_vtr === filtroVtrBI) {
@@ -317,12 +500,15 @@ export default function Admin() {
       viaturasParaProcessar.forEach(v => {
         biMap[v.prefixo] = {
           prefixo: v.prefixo,
+          viaturaObj: v,
           kmTotal: 0,
           turnos: 0,
           relatosMotorista: 0,
           baixasAdmin: 0,
           ultimaAtividade: null,
-          kmMedio: 0
+          kmMedio: 0,
+          servicos: [],
+          manutencoes: []
         };
       });
 
@@ -342,6 +528,16 @@ export default function Admin() {
           gTotalKm += kmRodado;
         }
 
+        const turnoInfo = determinarTurno(s);
+        const sEnriquecido = {
+          ...s,
+          kmInicial,
+          kmFinal: Number.isFinite(kmFinal) ? kmFinal : null,
+          kmRodado,
+          turnoInfo
+        };
+        biMap[p].servicos.push(sEnriquecido);
+
         // Determinar Turno Operacional Único (Ignorando Deslocamento Administrativo)
         if (s.finalidade !== 'Deslocamento Administrativo') {
           const dateObjStart = s.hora_inicial?.toDate ? s.hora_inicial.toDate() : (s.timestamp?.toDate ? s.timestamp.toDate() : (s.timestamp?.seconds ? new Date(s.timestamp.seconds * 1000) : null));
@@ -356,7 +552,7 @@ export default function Admin() {
             let is12h = false;
             if (dateObjEnd) {
               const diffHours = (dateObjEnd.getTime() - dateObjStart.getTime()) / (1000 * 60 * 60);
-              if (diffHours > 8) {
+              if (diffHours >= 8) {
                 is12h = true;
               }
             }
@@ -371,7 +567,7 @@ export default function Admin() {
                 slotsCovered.push('especial_1', 'especial_2');
               }
             } else {
-              // Turno normal de 6h ou alternativo (como 22:00 às 04:00, 19:00 às 01:00, etc.)
+              // Turno normal de 6h ou alternativo
               let slotId = 'madrugada';
               if (startHour >= 6 && startHour < 12) slotId = 'manha';
               else if (startHour >= 12 && startHour < 18) slotId = 'tarde';
@@ -412,6 +608,7 @@ export default function Admin() {
         const p = m.prefixo_vtr;
         if (!p || !biMap[p]) return;
 
+        biMap[p].manutencoes.push(m);
         if (m.silencioso) {
           biMap[p].baixasAdmin += 1;
           gTotalBaixas += 1;
@@ -426,13 +623,41 @@ export default function Admin() {
         const baixas = s.baixasAdmin || 0;
         const ocorrencias = relatos + baixas;
         const taxaOcorrencias = s.turnos > 0 ? (ocorrencias / s.turnos) * 100 : 0;
-        const statusAtual = viaturas.find(v => v.prefixo === s.prefixo)?.status || 'sem status';
+        const vtrObj = viaturas.find(v => v.prefixo === s.prefixo);
+        const statusAtual = vtrObj?.status || 'sem status';
+
+        // Ordenar serviços do mais recente para o mais antigo
+        s.servicos.sort((a, b) => {
+          const tsA = a.hora_inicial?.seconds || a.timestamp?.seconds || 0;
+          const tsB = b.hora_inicial?.seconds || b.timestamp?.seconds || 0;
+          return tsB - tsA;
+        });
+
+        // Ordenar manutenções da mais recente para a mais antiga
+        s.manutencoes.sort((a, b) => {
+          const tsA = a.data_relato?.seconds || 0;
+          const tsB = b.data_relato?.seconds || 0;
+          return tsB - tsA;
+        });
+
+        const ultimoServico = s.servicos[0] || null;
+        const ultimoMotorista = ultimoServico ? (ultimoServico.motorista || ultimoServico.matricula_assuncao || 'Não informado') : 'Sem registro';
+        const ultimoTurno = ultimoServico ? ultimoServico.turnoInfo.sigla : '-';
+        const ultimaAssuncaoHora = ultimoServico ? `${ultimoServico.turnoInfo.dataStr} às ${ultimoServico.turnoInfo.horaInicio}` : '-';
+        const motoristasUnicos = Array.from(new Set(s.servicos.map(x => x.motorista).filter(Boolean)));
+
         return {
           ...s,
+          vtrObj,
           kmMedio: s.turnos > 0 ? (s.kmTotal / s.turnos).toFixed(1) : 0,
           ocorrencias,
           taxaOcorrencias: taxaOcorrencias.toFixed(1),
           statusAtual,
+          ultimoServico,
+          ultimoMotorista,
+          ultimoTurno,
+          ultimaAssuncaoHora,
+          motoristasUnicos,
           // Campos de compatibilidade para o relatório executivo: são indicadores derivados,
           // nunca uma medição histórica de disponibilidade.
           scoreSaude: Math.max(0, 100 - Math.min(100, taxaOcorrencias)).toFixed(1),
@@ -488,7 +713,8 @@ export default function Admin() {
 
     let csv = "\uFEFF"; // BOM para acentos no Excel
     csv += "RELATÓRIO DE GESTÃO DE FROTA - 1ª CIA / 46º BPM\n";
-    csv += `Data de Geração: ${new Date().toLocaleString('pt-BR')}\n\n`;
+    csv += `Data de Geração: ${new Date().toLocaleString('pt-BR')}\n`;
+    csv += `Período: ${relatorioBI.periodo}\n\n`;
 
     csv += "RESUMO GERAL\n";
     csv += `KM Total da Frota;${resumoGeral.totalKm}\n`;
@@ -496,17 +722,40 @@ export default function Admin() {
     csv += `Relatos de Defeito;${resumoGeral.totalAlertas}\n`;
     csv += `Total de Baixas Admin;${resumoGeral.totalBaixas}\n\n`;
 
-    csv += "DADOS POR VIATURA\n";
-    csv += "Prefixo;Situação Atual;KM Total;Turnos;Média KM/Turno;Relatos de Defeito;Baixas Administrativas;Ocorrências/100 Turnos\n";
+    csv += "CONSOLIDADO POR VIATURA\n";
+    csv += "Prefixo;Situação Atual;KM Total;Turnos;Média KM/Turno;Último Turno;Último Motorista;Última Assunção;Relatos de Defeito;Baixas Administrativas;Ocorrências/100 Turnos\n";
 
     stats.forEach(s => {
-      csv += `${s.prefixo};${s.statusAtual};${s.kmTotal};${s.turnos};${s.kmMedio};${s.relatosMotorista};${s.baixasAdmin};${s.taxaOcorrencias}\n`;
+      csv += `${s.prefixo};${s.statusAtual};${s.kmTotal};${s.turnos};${s.kmMedio};${s.ultimoTurno || '-'};${s.ultimoMotorista || '-'};${s.ultimaAssuncaoHora || '-'};${s.relatosMotorista};${s.baixasAdmin};${s.taxaOcorrencias}\n`;
+    });
+
+    csv += "\nDETALHAMENTO COMPLETO DE ASSUNÇÕES NO PERÍODO (TURNO / HORA / MOTORISTA / KM)\n";
+    csv += "Prefixo;Data Assunção;Hora Assunção;Turno;Motorista;Matrícula;Patrulheiro;Data/Hora Encerramento;KM Inicial;KM Final;KM Rodado;Finalidade;Alteração Inicial;Alteração Encerramento\n";
+
+    stats.forEach(s => {
+      (s.servicos || []).forEach(srv => {
+        const dtInicio = srv.turnoInfo?.dataStr || '-';
+        const hrInicio = srv.turnoInfo?.horaInicio || '-';
+        const turnoNome = srv.turnoInfo?.nome || '-';
+        const mot = (srv.motorista || '').replace(/;/g, ',');
+        const mat = (srv.matricula_assuncao || '').replace(/;/g, ',');
+        const pat = (srv.patrulheiro || '').replace(/;/g, ',');
+        const hrFim = srv.hora_final ? (srv.turnoInfo?.horaFim || formatarData(srv.hora_final)) : 'Em andamento';
+        const kmIni = srv.km_inicial ?? '';
+        const kmFin = srv.km_final ?? '';
+        const kmRod = srv.kmRodado ?? '';
+        const fin = (srv.finalidade || '').replace(/;/g, ',');
+        const altIni = (srv.alteracao_inicial || '').replace(/[\r\n;]+/g, ' ');
+        const altFim = (srv.alteracao_final || '').replace(/[\r\n;]+/g, ' ');
+
+        csv += `${s.prefixo};${dtInicio};${hrInicio};${turnoNome};${mot};${mat};${pat};${hrFim};${kmIni};${kmFin};${kmRod};${fin};${altIni};${altFim}\n`;
+      });
     });
 
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `BI_FROTA_46BPM_${new Date().toISOString().split('T')[0]}.csv`;
+    link.download = `BI_FROTA_DETALHADO_46BPM_${new Date().toISOString().split('T')[0]}.csv`;
     link.click();
   };
 
@@ -2494,27 +2743,467 @@ export default function Admin() {
             </div>
           </div>
 
-          <div className="card table-wrapper bi-table" style={{ padding: 0, overflow: 'hidden' }}>
-            <div className="flex-between bi-table-header" style={{ flexWrap: 'wrap', gap: '0.5rem' }}>
-              <div><h3 style={{ margin: 0 }}>Detalhamento por viatura</h3><p className="text-muted" style={{ margin: '0.25rem 0 0', fontSize: '0.85rem' }}>Dados consolidados para o período selecionado</p></div>
-              <span className="text-muted" style={{ fontSize: '0.8rem' }}>{relatorioBI.stats.length} viatura(s)</span>
+          <div className="card table-wrapper bi-table" style={{ padding: 0, overflow: 'hidden', border: '1px solid var(--border-color)', borderRadius: '12px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.05)' }}>
+            <div className="flex-between bi-table-header" style={{ flexWrap: 'wrap', gap: '1rem', padding: '1.25rem 1.5rem', borderBottom: '1px solid var(--border-color)', backgroundColor: 'var(--table-header-bg)' }}>
+              <div>
+                <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px', fontSize: '1.25rem' }}>
+                  <Car size={20} color="var(--bm-green)" /> Detalhamento por Viatura e Assunções Operacionais
+                </h3>
+                <p className="text-muted" style={{ margin: '0.25rem 0 0', fontSize: '0.85rem' }}>
+                  Dados consolidados e assunções detalhadas por turno, horário e motorista no período selecionado ({relatorioBI.periodo})
+                </p>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                <div style={{ position: 'relative', minWidth: '220px' }}>
+                  <Search size={15} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+                  <input
+                    type="text"
+                    placeholder="Filtrar viatura ou motorista..."
+                    value={buscaTabelaBI}
+                    onChange={e => setBuscaTabelaBI(e.target.value)}
+                    className="form-input"
+                    style={{ height: '36px', paddingLeft: '32px', fontSize: '0.82rem', borderRadius: '8px', width: '100%' }}
+                  />
+                  {buscaTabelaBI && (
+                    <button type="button" onClick={() => setBuscaTabelaBI('')} style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}>
+                      <X size={14} />
+                    </button>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => expandirTodasViaturasBI(Object.keys(viaturasExpandidasBI).length === 0)}
+                  style={{ height: '36px', padding: '0 12px', fontSize: '0.8rem', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                >
+                  {Object.keys(viaturasExpandidasBI).length > 0 ? (
+                    <><ChevronUp size={15} /> Recolher Todas</>
+                  ) : (
+                    <><ChevronDown size={15} /> Expandir Todas</>
+                  )}
+                </button>
+
+                <span className="badge badge-secondary" style={{ height: '32px', display: 'inline-flex', alignItems: 'center', padding: '0 10px', fontSize: '0.8rem', fontWeight: 700 }}>
+                  {relatorioBI.stats.length} viatura(s)
+                </span>
+              </div>
             </div>
-            <table className="table">
-              <thead><tr><th>Viatura</th><th>Situação atual</th><th>KM rodados</th><th>Turnos</th><th>Média/turno</th><th>Ocorrências</th><th>Ocorrências / 100 turnos</th></tr></thead>
-              <tbody>
-                {relatorioBI.stats.length > 0 ? relatorioBI.stats.map(s => {
-                  const statusCor = s.statusAtual === 'disponivel' ? 'var(--status-available)' : s.statusAtual === 'em_servico' ? 'var(--status-inservice)' : 'var(--status-warning)';
-                  const statusTexto = s.statusAtual === 'disponivel' ? 'Disponível' : s.statusAtual === 'em_servico' ? 'Em serviço' : s.statusAtual === 'baixada' ? 'Baixada' : 'Sem status';
-                  return <tr key={s.prefixo}>
-                    <td><strong>VTR {s.prefixo}</strong></td>
-                    <td><span style={{ color: statusCor, fontWeight: 700, textTransform: 'capitalize' }}>{statusTexto}</span></td>
-                    <td>{Number(s.kmTotal).toLocaleString('pt-BR')} km</td><td>{s.turnos}</td><td>{s.kmMedio} km</td>
-                    <td style={{ color: s.ocorrencias > 0 ? 'var(--status-alteration)' : 'inherit', fontWeight: s.ocorrencias > 0 ? 700 : 400 }}>{s.ocorrencias}</td>
-                    <td>{s.taxaOcorrencias}</td>
-                  </tr>;
-                }) : <tr><td colSpan="7" style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}>Nenhuma viatura encontrada para os filtros selecionados.</td></tr>}
-              </tbody>
-            </table>
+
+            <div style={{ overflowX: 'auto' }}>
+              <table className="table" style={{ margin: 0 }}>
+                <thead>
+                  <tr style={{ backgroundColor: 'var(--table-header-bg)' }}>
+                    <th style={{ width: '40px' }}></th>
+                    <th>Viatura</th>
+                    <th>Situação</th>
+                    <th>Última Assunção (Turno / Horário)</th>
+                    <th>Último Motorista</th>
+                    <th style={{ textAlign: 'right' }}>KM Rodados</th>
+                    <th style={{ textAlign: 'center' }}>Turnos</th>
+                    <th style={{ textAlign: 'right' }}>Média/Turno</th>
+                    <th style={{ textAlign: 'center' }}>Ocorrências</th>
+                    <th style={{ textAlign: 'center' }}>Ações</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(() => {
+                    const termo = buscaTabelaBI.trim().toLowerCase();
+                    const statsFiltradas = relatorioBI.stats.filter(s => {
+                      if (!termo) return true;
+                      if (s.prefixo?.toLowerCase().includes(termo)) return true;
+                      if (s.ultimoMotorista?.toLowerCase().includes(termo)) return true;
+                      if (s.motoristasUnicos?.some(m => m?.toLowerCase().includes(termo))) return true;
+                      return false;
+                    });
+
+                    if (statsFiltradas.length === 0) {
+                      return (
+                        <tr>
+                          <td colSpan="10" style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2.5rem 1rem' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
+                              <Car size={32} opacity={0.4} />
+                              <span>{buscaTabelaBI ? 'Nenhuma viatura ou motorista encontrado com o filtro informado.' : 'Nenhuma viatura encontrada para os filtros selecionados.'}</span>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    }
+
+                    return statsFiltradas.map(s => {
+                      const isExpandida = !!viaturasExpandidasBI[s.prefixo];
+                      const statusCor = s.statusAtual === 'disponivel' ? 'var(--status-available)' : s.statusAtual === 'em_servico' ? 'var(--status-inservice)' : 'var(--status-warning)';
+                      const statusTexto = s.statusAtual === 'disponivel' ? 'Disponível' : s.statusAtual === 'em_servico' ? 'Em serviço' : s.statusAtual === 'baixada' ? 'Baixada' : 'Sem status';
+                      const badgeBg = s.statusAtual === 'disponivel' ? 'var(--badge-available-bg)' : s.statusAtual === 'em_servico' ? 'var(--badge-inservice-bg)' : 'var(--badge-alert-bg)';
+                      const badgeText = s.statusAtual === 'disponivel' ? 'var(--badge-available-text)' : s.statusAtual === 'em_servico' ? 'var(--badge-inservice-text)' : 'var(--badge-alert-text)';
+
+                      return (
+                        <Fragment key={s.prefixo}>
+                          <tr
+                            onClick={() => alternarViaturaBI(s.prefixo)}
+                            style={{
+                              cursor: 'pointer',
+                              backgroundColor: isExpandida ? 'var(--hover-bg)' : 'transparent',
+                              transition: 'background-color 0.15s ease'
+                            }}
+                          >
+                            <td style={{ textAlign: 'center', color: 'var(--bm-green)', paddingRight: 0 }}>
+                              {isExpandida ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+                            </td>
+                            <td>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <div style={{ backgroundColor: 'rgba(45,74,34,0.1)', color: 'var(--bm-green)', padding: '6px', borderRadius: '6px' }}>
+                                  <Car size={16} />
+                                </div>
+                                <div>
+                                  <strong style={{ fontSize: '0.95rem', color: 'var(--text-main)', display: 'block' }}>VTR {s.prefixo}</strong>
+                                  <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                                    {s.servicos.length} assunção(ões) no período
+                                  </span>
+                                </div>
+                              </div>
+                            </td>
+                            <td>
+                              <span style={{ backgroundColor: badgeBg, color: badgeText, padding: '4px 10px', borderRadius: '6px', fontSize: '0.78rem', fontWeight: 700, textTransform: 'capitalize', display: 'inline-block' }}>
+                                {statusTexto}
+                              </span>
+                            </td>
+                            <td>
+                              {s.ultimoServico ? (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                  <span style={{ backgroundColor: s.ultimoServico.turnoInfo?.bg, color: s.ultimoServico.turnoInfo?.cor, padding: '2px 8px', borderRadius: '4px', fontSize: '0.75rem', fontWeight: 700, width: 'fit-content' }}>
+                                    {s.ultimoServico.turnoInfo?.sigla}
+                                  </span>
+                                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                    <Clock size={12} /> {s.ultimaAssuncaoHora}
+                                  </span>
+                                </div>
+                              ) : (
+                                <span className="text-muted" style={{ fontSize: '0.8rem' }}>Sem turnos no período</span>
+                              )}
+                            </td>
+                            <td>
+                              {s.ultimoServico ? (
+                                <div>
+                                  <div style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--text-main)' }}>
+                                    {s.ultimoMotorista}
+                                  </div>
+                                  {s.ultimoServico.matricula_assuncao && (
+                                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                                      Mat: {s.ultimoServico.matricula_assuncao}
+                                    </div>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="text-muted" style={{ fontSize: '0.8rem' }}>-</span>
+                              )}
+                            </td>
+                            <td style={{ textAlign: 'right', fontWeight: 700 }}>
+                              {Number(s.kmTotal).toLocaleString('pt-BR')} km
+                            </td>
+                            <td style={{ textAlign: 'center', fontWeight: 600 }}>
+                              {s.turnos}
+                            </td>
+                            <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>
+                              {s.kmMedio} km
+                            </td>
+                            <td style={{ textAlign: 'center' }}>
+                              <span style={{
+                                backgroundColor: s.ocorrencias > 0 ? 'rgba(239, 68, 68, 0.15)' : 'var(--hover-bg)',
+                                color: s.ocorrencias > 0 ? 'var(--status-alteration)' : 'var(--text-muted)',
+                                padding: '3px 9px',
+                                borderRadius: '12px',
+                                fontWeight: 700,
+                                fontSize: '0.8rem'
+                              }}>
+                                {s.ocorrencias}
+                              </span>
+                            </td>
+                            <td style={{ textAlign: 'center' }} onClick={e => e.stopPropagation()}>
+                              <div style={{ display: 'inline-flex', gap: '6px' }}>
+                                <button
+                                  type="button"
+                                  className="btn btn-secondary"
+                                  onClick={() => alternarViaturaBI(s.prefixo)}
+                                  style={{ padding: '5px 10px', fontSize: '0.78rem', height: 'auto', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                                  title={isExpandida ? "Recolher detalhes" : "Abrir detalhes de turnos e motoristas"}
+                                >
+                                  {isExpandida ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                                  {isExpandida ? 'Recolher' : 'Abrir'}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-secondary"
+                                  onClick={() => setModalViaturaDetalhadaBI(s)}
+                                  style={{ padding: '5px 8px', fontSize: '0.78rem', height: 'auto' }}
+                                  title="Ver ficha completa / Imprimir relatório da viatura"
+                                >
+                                  <FileText size={14} />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+
+                          {/* PAINEL EXPANSÍVEL: ASSUNÇÕES DETALHADAS DA VIATURA */}
+                          {isExpandida && (
+                            <tr key={`${s.prefixo}_expanded`}>
+                              <td colSpan="10" style={{ padding: '1.25rem', backgroundColor: 'var(--input-bg)', borderBottom: '2px solid var(--border-color)' }}>
+                                <div className="fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                                  
+                                  {/* Resumo da Viatura no Período */}
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', paddingBottom: '0.75rem', borderBottom: '1px solid var(--border-color)' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+                                      <h4 style={{ margin: 0, fontSize: '1rem', color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                        <Car size={16} color="var(--bm-green)" />
+                                        Assunções e Registros: VTR {s.prefixo}
+                                      </h4>
+                                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                                        Período: <strong>{relatorioBI.periodo}</strong>
+                                      </span>
+                                    </div>
+
+                                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                                      <button
+                                        type="button"
+                                        className="btn btn-secondary"
+                                        onClick={() => exportarCSVViatura(s)}
+                                        style={{ height: '32px', padding: '0 10px', fontSize: '0.78rem', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                                      >
+                                        <Download size={14} /> Exportar Assunções (CSV)
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="btn btn-primary"
+                                        onClick={() => setModalViaturaDetalhadaBI(s)}
+                                        style={{ height: '32px', padding: '0 12px', fontSize: '0.78rem', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                                      >
+                                        <Eye size={14} /> Ficha Completa / Imprimir
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  {/* Badges de Resumo da Viatura */}
+                                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '0.75rem' }}>
+                                    <div style={{ backgroundColor: 'var(--card-bg)', padding: '10px 14px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                                      <span style={{ fontSize: '0.72rem', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 700, display: 'block' }}>KM Rodados no Período</span>
+                                      <strong style={{ fontSize: '1.15rem', color: 'var(--bm-green)' }}>{Number(s.kmTotal).toLocaleString('pt-BR')} km</strong>
+                                    </div>
+                                    <div style={{ backgroundColor: 'var(--card-bg)', padding: '10px 14px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                                      <span style={{ fontSize: '0.72rem', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 700, display: 'block' }}>Turnos Operacionais</span>
+                                      <strong style={{ fontSize: '1.15rem', color: '#2563eb' }}>{s.turnos} turnos</strong>
+                                    </div>
+                                    <div style={{ backgroundColor: 'var(--card-bg)', padding: '10px 14px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                                      <span style={{ fontSize: '0.72rem', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 700, display: 'block' }}>Média de KM / Turno</span>
+                                      <strong style={{ fontSize: '1.15rem', color: 'var(--text-main)' }}>{s.kmMedio} km</strong>
+                                    </div>
+                                    <div style={{ backgroundColor: 'var(--card-bg)', padding: '10px 14px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                                      <span style={{ fontSize: '0.72rem', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 700, display: 'block' }}>Motoristas no Período</span>
+                                      <strong style={{ fontSize: '1.15rem', color: 'var(--text-main)' }}>{s.motoristasUnicos.length} militar(es)</strong>
+                                    </div>
+                                    <div style={{ backgroundColor: 'var(--card-bg)', padding: '10px 14px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                                      <span style={{ fontSize: '0.72rem', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 700, display: 'block' }}>Ocorrências / Relatos</span>
+                                      <strong style={{ fontSize: '1.15rem', color: s.ocorrencias > 0 ? 'var(--status-alteration)' : 'var(--text-muted)' }}>{s.ocorrencias}</strong>
+                                    </div>
+                                  </div>
+
+                                  {/* Sub-Tabela com as Assunções Detalhadas da Viatura */}
+                                  <div style={{ backgroundColor: 'var(--card-bg)', borderRadius: '8px', border: '1px solid var(--border-color)', overflow: 'hidden' }}>
+                                    <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                      <span style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-main)' }}>
+                                        Histórico Granular de Assunções no Período ({s.servicos.length} registros)
+                                      </span>
+                                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                        Ordenadas da mais recente para a mais antiga
+                                      </span>
+                                    </div>
+
+                                    {s.servicos.length === 0 ? (
+                                      <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                                        Nenhuma assunção registrada para esta viatura no período selecionado.
+                                      </div>
+                                    ) : (
+                                      <div style={{ overflowX: 'auto' }}>
+                                        <table className="table" style={{ fontSize: '0.82rem', margin: 0 }}>
+                                          <thead>
+                                            <tr style={{ backgroundColor: 'var(--table-header-bg)' }}>
+                                              <th>Assunção (Data / Hora)</th>
+                                              <th>Turno Operacional</th>
+                                              <th>Motorista (Assunção)</th>
+                                              <th>Patrulheiro</th>
+                                              <th>Término / Devolução</th>
+                                              <th>Odômetro (KM Inicial ➔ Final)</th>
+                                              <th style={{ textAlign: 'right' }}>KM Rodado</th>
+                                              <th>Finalidade</th>
+                                              <th>Alterações / Checklist</th>
+                                              <th style={{ textAlign: 'center' }}>Detalhes</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {s.servicos.map(srv => {
+                                              const temAlteracao = !!(srv.alteracao_inicial || srv.alteracao_final || srv.com_alteracao || srv.descricao_alteracao);
+                                              const altTexto = srv.alteracao_inicial || srv.alteracao_final || srv.descricao_alteracao || '';
+
+                                              return (
+                                                <tr key={srv.id || `${srv.prefixo_vtr}_${srv.timestamp?.seconds}`}>
+                                                  <td>
+                                                    <div style={{ fontWeight: 700, color: 'var(--text-main)' }}>
+                                                      {srv.turnoInfo.dataStr}
+                                                    </div>
+                                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '3px' }}>
+                                                      <Clock size={11} /> {srv.turnoInfo.horaInicio}
+                                                    </div>
+                                                  </td>
+                                                  <td>
+                                                    <span style={{
+                                                      backgroundColor: srv.turnoInfo.bg,
+                                                      color: srv.turnoInfo.cor,
+                                                      padding: '3px 8px',
+                                                      borderRadius: '4px',
+                                                      fontSize: '0.74rem',
+                                                      fontWeight: 700,
+                                                      display: 'inline-block'
+                                                    }}>
+                                                      {srv.turnoInfo.nome}
+                                                    </span>
+                                                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                                                      {srv.turnoInfo.horario}
+                                                    </div>
+                                                  </td>
+                                                  <td>
+                                                    <div style={{ fontWeight: 600, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                                      <User size={12} color="var(--bm-green)" />
+                                                      {srv.motorista || srv.matricula_assuncao || 'Não informado'}
+                                                    </div>
+                                                    {srv.matricula_assuncao && (
+                                                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', paddingLeft: '16px' }}>
+                                                        Mat: {srv.matricula_assuncao}
+                                                      </div>
+                                                    )}
+                                                  </td>
+                                                  <td>
+                                                    {srv.patrulheiro ? (
+                                                      <span style={{ color: 'var(--text-main)' }}>{srv.patrulheiro}</span>
+                                                    ) : (
+                                                      <span className="text-muted">-</span>
+                                                    )}
+                                                  </td>
+                                                  <td>
+                                                    {srv.hora_final ? (
+                                                      <div>
+                                                        <div style={{ fontWeight: 600 }}>{srv.turnoInfo.horaFim}</div>
+                                                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                                                          {formatarData(srv.hora_final)}
+                                                        </div>
+                                                      </div>
+                                                    ) : (
+                                                      <span className="badge badge-inservice" style={{ fontSize: '0.72rem' }}>
+                                                        Em andamento
+                                                      </span>
+                                                    )}
+                                                  </td>
+                                                  <td>
+                                                    <div style={{ fontSize: '0.78rem' }}>
+                                                      <span>{srv.km_inicial} km</span>
+                                                      <span style={{ margin: '0 4px', color: 'var(--text-muted)' }}>➔</span>
+                                                      <span>{srv.km_final ? `${srv.km_final} km` : '---'}</span>
+                                                    </div>
+                                                  </td>
+                                                  <td style={{ textAlign: 'right' }}>
+                                                    {srv.kmRodado > 0 ? (
+                                                      <span className="badge badge-secondary" style={{ fontWeight: 700, fontSize: '0.75rem' }}>
+                                                        +{srv.kmRodado} km
+                                                      </span>
+                                                    ) : (
+                                                      <span className="text-muted" style={{ fontSize: '0.75rem' }}>0 km</span>
+                                                    )}
+                                                  </td>
+                                                  <td>
+                                                    <span style={{ fontSize: '0.78rem', color: 'var(--text-main)' }}>
+                                                      {srv.finalidade || 'Policiamento Ostensivo'}
+                                                    </span>
+                                                  </td>
+                                                  <td>
+                                                    {temAlteracao ? (
+                                                      <span
+                                                        className="badge badge-alert"
+                                                        style={{ fontSize: '0.72rem', cursor: 'pointer', maxWidth: '200px', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', display: 'inline-block' }}
+                                                        title={altTexto}
+                                                      >
+                                                        ⚠️ {altTexto || 'Alteração informada'}
+                                                      </span>
+                                                    ) : (
+                                                      <span className="badge badge-available" style={{ fontSize: '0.72rem' }}>
+                                                        <CheckCircle size={10} style={{ marginRight: '3px' }} /> Sem avarias
+                                                      </span>
+                                                    )}
+                                                  </td>
+                                                  <td style={{ textAlign: 'center' }}>
+                                                    <button
+                                                      type="button"
+                                                      className="btn-icon"
+                                                      title="Abrir telemetria e detalhes completos deste serviço"
+                                                      onClick={() => setServicoSelecionado(srv)}
+                                                      style={{ color: 'var(--bm-green)', padding: '4px' }}
+                                                    >
+                                                      <Eye size={16} />
+                                                    </button>
+                                                  </td>
+                                                </tr>
+                                              );
+                                            })}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  {/* Bloco de Manutenções/Ocorrências do Período se houver */}
+                                  {s.manutencoes && s.manutencoes.length > 0 && (
+                                    <div style={{ backgroundColor: 'var(--card-bg)', borderRadius: '8px', border: '1px solid rgba(239, 68, 68, 0.3)', padding: '12px 16px' }}>
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                                        <AlertTriangle size={16} color="var(--status-alteration)" />
+                                        <strong style={{ fontSize: '0.85rem', color: 'var(--status-alteration)' }}>
+                                          Ocorrências e Registros de Manutenção no Período ({s.manutencoes.length})
+                                        </strong>
+                                      </div>
+                                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                        {s.manutencoes.map((m, idx) => (
+                                          <div key={m.id || idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.8rem', padding: '6px 10px', backgroundColor: 'var(--hover-bg)', borderRadius: '6px' }}>
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                              <span style={{ fontWeight: 600 }}>{m.descricao || 'Sem descrição'}</span>
+                                              <span className="text-muted" style={{ fontSize: '0.72rem' }}>
+                                                {formatarData(m.data_relato)} • Relatado por: {m.relatado_por || 'N/A'}{m.origem ? ` (${m.origem})` : ''}
+                                              </span>
+                                            </div>
+                                            <span style={{
+                                              fontSize: '0.72rem',
+                                              padding: '2px 8px',
+                                              borderRadius: '4px',
+                                              fontWeight: 700,
+                                              textTransform: 'capitalize',
+                                              backgroundColor: m.status === 'resolvido' ? 'var(--badge-available-bg)' : m.status === 'oficina' ? 'var(--badge-inservice-bg)' : 'var(--badge-alert-bg)',
+                                              color: m.status === 'resolvido' ? 'var(--badge-available-text)' : m.status === 'oficina' ? 'var(--badge-inservice-text)' : 'var(--badge-alert-text)'
+                                            }}>
+                                              {m.status || 'Pendente'}
+                                            </span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      );
+                    });
+                  })()}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
@@ -3350,6 +4039,174 @@ export default function Admin() {
       )}
 
       {/* MODAL ESTRATÉGICO: RELATÓRIO EXECUTIVO DE PRONTIDÃO (PRINT FRIENDLY) */}
+      
+      {/* MODAL DETALHADO: FICHA INDIVIDUAL DE ASSUNÇÕES DA VIATURA */}
+      {modalViaturaDetalhadaBI && (
+        <div className="modal-overlay" onClick={() => setModalViaturaDetalhadaBI(null)} style={{ zIndex: 3000 }}>
+          <div className="modal-content fade-in" onClick={e => e.stopPropagation()} style={{ maxWidth: '950px', width: '100%', borderTopColor: 'var(--bm-green)', padding: '2rem', maxHeight: '90vh', overflowY: 'auto' }}>
+            <div className="flex-between no-print" style={{ marginBottom: '1.5rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div style={{ backgroundColor: 'var(--bm-green)', color: 'white', padding: '8px', borderRadius: '8px' }}>
+                  <Car size={22} />
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '1.25rem' }}>Relatório Operacional da VTR {modalViaturaDetalhadaBI.prefixo}</h3>
+                  <span className="text-muted" style={{ fontSize: '0.85rem' }}>Histórico completo de turnos, horários e motoristas</span>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button type="button" className="btn btn-secondary" onClick={() => exportarCSVViatura(modalViaturaDetalhadaBI)} style={{ height: '36px', padding: '0 12px', fontSize: '0.85rem', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                  <Download size={16} /> Exportar CSV
+                </button>
+                <button type="button" className="btn btn-primary" onClick={() => window.print()} style={{ height: '36px', padding: '0 14px', fontSize: '0.85rem', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                  <Printer size={16} /> Imprimir / PDF
+                </button>
+                <button type="button" className="btn-icon" onClick={() => setModalViaturaDetalhadaBI(null)} style={{ height: '36px', width: '36px' }}>
+                  <X size={20} />
+                </button>
+              </div>
+            </div>
+
+            {/* Cabeçalho Militar */}
+            <div style={{ textAlign: 'center', marginBottom: '1.5rem', borderBottom: '2px solid var(--border-color)', paddingBottom: '1rem' }}>
+              <div style={{ fontSize: '0.85rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)', letterSpacing: '1px' }}>
+                Estado do Rio Grande do Sul • Brigada Militar
+              </div>
+              <div style={{ fontSize: '1.15rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-main)', marginTop: '2px' }}>
+                1ª Companhia do 46º Batalhão de Polícia Militar
+              </div>
+              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                Setor de Logística e Patrimônio (P4) • Bagé - RS
+              </div>
+              <h3 style={{ fontSize: '1.3rem', margin: '1rem 0 4px', textTransform: 'uppercase', color: 'var(--bm-green)' }}>
+                Ficha Detalhada de Emprego Operacional da VTR {modalViaturaDetalhadaBI.prefixo}
+              </h3>
+              <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                Período de Referência: <strong>{relatorioBI.periodo}</strong> • Situação Atual: <strong>{modalViaturaDetalhadaBI.statusAtual?.toUpperCase()}</strong> • Emissão: {new Date().toLocaleString('pt-BR')}
+              </div>
+            </div>
+
+            {/* Resumo de Indicadores */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem', marginBottom: '1.5rem', textAlign: 'center' }}>
+              <div style={{ padding: '10px', border: '1px solid var(--border-color)', borderRadius: '8px', backgroundColor: 'var(--hover-bg)' }}>
+                <span style={{ fontSize: '0.7rem', textTransform: 'uppercase', color: 'var(--text-muted)', display: 'block', fontWeight: 700 }}>KM Percorrido</span>
+                <strong style={{ fontSize: '1.2rem', color: 'var(--bm-green)' }}>{Number(modalViaturaDetalhadaBI.kmTotal).toLocaleString('pt-BR')} km</strong>
+              </div>
+              <div style={{ padding: '10px', border: '1px solid var(--border-color)', borderRadius: '8px', backgroundColor: 'var(--hover-bg)' }}>
+                <span style={{ fontSize: '0.7rem', textTransform: 'uppercase', color: 'var(--text-muted)', display: 'block', fontWeight: 700 }}>Total de Turnos</span>
+                <strong style={{ fontSize: '1.2rem', color: '#2563eb' }}>{modalViaturaDetalhadaBI.turnos}</strong>
+              </div>
+              <div style={{ padding: '10px', border: '1px solid var(--border-color)', borderRadius: '8px', backgroundColor: 'var(--hover-bg)' }}>
+                <span style={{ fontSize: '0.7rem', textTransform: 'uppercase', color: 'var(--text-muted)', display: 'block', fontWeight: 700 }}>Média / Turno</span>
+                <strong style={{ fontSize: '1.2rem', color: 'var(--text-main)' }}>{modalViaturaDetalhadaBI.kmMedio} km</strong>
+              </div>
+              <div style={{ padding: '10px', border: '1px solid var(--border-color)', borderRadius: '8px', backgroundColor: 'var(--hover-bg)' }}>
+                <span style={{ fontSize: '0.7rem', textTransform: 'uppercase', color: 'var(--text-muted)', display: 'block', fontWeight: 700 }}>Ocorrências / Defeitos</span>
+                <strong style={{ fontSize: '1.2rem', color: modalViaturaDetalhadaBI.ocorrencias > 0 ? 'var(--status-alteration)' : 'var(--text-muted)' }}>{modalViaturaDetalhadaBI.ocorrencias}</strong>
+              </div>
+            </div>
+
+            {/* Tabela de Assunções */}
+            <div style={{ marginBottom: '1.5rem' }}>
+              <h4 style={{ fontSize: '0.9rem', color: 'var(--bm-green)', textTransform: 'uppercase', marginBottom: '8px', borderBottom: '1px solid var(--border-color)', paddingBottom: '4px' }}>
+                Registro Cronológico de Assunções, Turnos e Motoristas ({modalViaturaDetalhadaBI.servicos?.length || 0})
+              </h4>
+              <div style={{ overflowX: 'auto' }}>
+                <table className="table" style={{ fontSize: '0.8rem', width: '100%', margin: 0 }}>
+                  <thead>
+                    <tr style={{ backgroundColor: 'var(--table-header-bg)' }}>
+                      <th>Assunção</th>
+                      <th>Turno</th>
+                      <th>Motorista</th>
+                      <th>Patrulheiro</th>
+                      <th>Devolução</th>
+                      <th>KM Inicial ➔ Final</th>
+                      <th style={{ textAlign: 'right' }}>Rodado</th>
+                      <th>Missão</th>
+                      <th>Avarias / Relatos</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(modalViaturaDetalhadaBI.servicos || []).length === 0 ? (
+                      <tr>
+                        <td colSpan="9" style={{ textAlign: 'center', padding: '1.5rem', color: 'var(--text-muted)' }}>
+                          Nenhum registro de turno no período.
+                        </td>
+                      </tr>
+                    ) : (
+                      modalViaturaDetalhadaBI.servicos.map(srv => (
+                        <tr key={srv.id || `${srv.prefixo_vtr}_${srv.timestamp?.seconds}`}>
+                          <td>
+                            <strong>{srv.turnoInfo.dataStr}</strong>
+                            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{srv.turnoInfo.horaInicio}</div>
+                          </td>
+                          <td>
+                            <span style={{ fontWeight: 600 }}>{srv.turnoInfo.nome}</span>
+                          </td>
+                          <td>
+                            <strong>{srv.motorista || srv.matricula_assuncao || 'Não informado'}</strong>
+                            {srv.matricula_assuncao && <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>ID: {srv.matricula_assuncao}</div>}
+                          </td>
+                          <td>{srv.patrulheiro || '-'}</td>
+                          <td>{srv.hora_final ? formatarData(srv.hora_final) : 'Em andamento'}</td>
+                          <td>{srv.km_inicial} km ➔ {srv.km_final ? `${srv.km_final} km` : '---'}</td>
+                          <td style={{ textAlign: 'right', fontWeight: 700 }}>+{srv.kmRodado} km</td>
+                          <td>{srv.finalidade || 'Policiamento Ostensivo'}</td>
+                          <td>
+                            {srv.alteracao_inicial || srv.alteracao_final || srv.descricao_alteracao ? (
+                              <span style={{ color: 'var(--status-alteration)', fontWeight: 600 }}>
+                                ⚠️ {srv.alteracao_inicial || srv.alteracao_final || srv.descricao_alteracao}
+                              </span>
+                            ) : (
+                              <span style={{ color: 'var(--status-available)' }}>Normal</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Ocorrências */}
+            {modalViaturaDetalhadaBI.manutencoes && modalViaturaDetalhadaBI.manutencoes.length > 0 && (
+              <div style={{ marginBottom: '2rem' }}>
+                <h4 style={{ fontSize: '0.9rem', color: 'var(--status-alteration)', textTransform: 'uppercase', marginBottom: '8px', borderBottom: '1px solid var(--border-color)', paddingBottom: '4px' }}>
+                  Ocorrências e Manutenções no Período ({modalViaturaDetalhadaBI.manutencoes.length})
+                </h4>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  {modalViaturaDetalhadaBI.manutencoes.map((m, idx) => (
+                    <div key={m.id || idx} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', backgroundColor: 'var(--hover-bg)', borderRadius: '6px', fontSize: '0.8rem' }}>
+                      <div>
+                        <strong>{m.descricao}</strong>
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                          {formatarData(m.data_relato)} • Relatado por: {m.relatado_por || 'N/A'}
+                        </div>
+                      </div>
+                      <span style={{ fontWeight: 700, textTransform: 'capitalize' }}>{m.status || 'Pendente'}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'space-around', marginTop: '3rem', fontSize: '0.85rem' }}>
+              <div style={{ textAlign: 'center', width: '240px', borderTop: '1px solid #000', paddingTop: '8px' }}>
+                <div style={{ fontWeight: 600 }}>Auxiliar do P4</div>
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>1ª Cia / 46º BPM</div>
+              </div>
+              <div style={{ textAlign: 'center', width: '240px', borderTop: '1px solid #000', paddingTop: '8px' }}>
+                <div style={{ fontWeight: 600 }}>Comandante da Companhia</div>
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>1ª Cia / 46º BPM</div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+
       {modalRelatorioExecutivo && (
         <div className="modal-overlay" onClick={() => setModalRelatorioExecutivo(false)} style={{ zIndex: 3000 }}>
           <div className="modal-content fade-in" onClick={e => e.stopPropagation()} style={{ maxWidth: '850px', width: '100%', borderTopColor: 'var(--bm-green)', padding: '2rem' }}>
