@@ -4,6 +4,7 @@ import { doc, getDoc, getDocs, updateDoc, addDoc, collection, serverTimestamp, q
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '../firebase';
 import { hashPassword } from '../lib/security';
+import { registrarErroApp } from '../lib/errorLogger';
 import { ShieldAlert, CheckCircle, Car, AlertCircle, ClipboardCheck, MapPin, Camera, List, ChevronRight, AlertTriangle, Info, CheckCircle2, User, LogOut, UserPlus, Download, X } from 'lucide-react';
 
 // Em produção, usa o mesmo domínio do Hosting. No desenvolvimento, usa a

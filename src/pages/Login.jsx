@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { signInWithEmailAndPassword } from 'firebase/auth';
 import { auth } from '../firebase';
 import { Shield, Lock, Mail, AlertCircle, Loader2 } from 'lucide-react';
+import { registrarErroApp } from '../lib/errorLogger';
 
 /**
  * Componente: Login (Página de Autenticação)
@@ -52,6 +53,19 @@ const Login = () => {
       navigate(from, { replace: true });
     } catch (err) {
       console.error(err);
+      
+      // Registra o erro no monitor central de Acessos
+      await registrarErroApp({
+        origem: 'LOGIN_ADMIN',
+        mensagem: `Falha no login administrativo: ${err.code || 'credenciais inválidas'}`,
+        detalhes: {
+          email,
+          codigoFirebase: err.code
+        },
+        erro: err,
+        severidade: err.code === 'auth/network-request-failed' ? 'erro' : 'aviso'
+      });
+
       // Se falhar (senha errada, usuário não existe, etc), exibe a mensagem amigável
       setError('Credenciais inválidas. Verifique seu e-mail e senha.');
     } finally {
